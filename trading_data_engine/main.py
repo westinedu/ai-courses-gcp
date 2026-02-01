@@ -35,13 +35,18 @@ if not GCS_BUCKET_NAME:
     LOCAL_FALLBACK_DATA_DIR = os.path.join(os.path.dirname(__file__), "historical_data_local_fallback")
     LOCAL_FALLBACK_AI_CONTEXT_DIR = os.path.join(os.path.dirname(__file__), "ai_context_local_fallback")
     LOCAL_FALLBACK_DAILY_INDEX_DIR = os.path.join(LOCAL_FALLBACK_AI_CONTEXT_DIR, "daily_index") # For daily_index.json
+    LOCAL_FALLBACK_ANALYSIS_DIR = os.path.join(os.path.dirname(__file__), "analysis_local_fallback")
+    LOCAL_FALLBACK_ANALYSIS_INDEX_DIR = os.path.join(LOCAL_FALLBACK_ANALYSIS_DIR, "daily_index")
 
     os.makedirs(LOCAL_FALLBACK_DATA_DIR, exist_ok=True)
     os.makedirs(LOCAL_FALLBACK_AI_CONTEXT_DIR, exist_ok=True)
     os.makedirs(LOCAL_FALLBACK_DAILY_INDEX_DIR, exist_ok=True)
+    os.makedirs(LOCAL_FALLBACK_ANALYSIS_DIR, exist_ok=True)
+    os.makedirs(LOCAL_FALLBACK_ANALYSIS_INDEX_DIR, exist_ok=True)
 
 # GCS path for the dynamic ticker list file
 GCS_TICKER_LIST_BLOB_NAME = os.environ.get("GCS_TICKER_LIST_BLOB", "config/default_tickers.json")
+GENERATE_ANALYSIS_IN_BATCH = str(os.environ.get("GENERATE_ANALYSIS_IN_BATCH", "1")).strip().lower() not in {"0", "false", "no"}
 
 
 # --- FastAPI App Initialization ---
@@ -936,6 +941,105 @@ def _save_daily_index_to_storage(index_date: date, index_list: List[Dict]) -> st
             return ""
 
 
+# --- Daily Analysis Storage (for Stockmap / probability graph) ---
+
+def _get_gcs_analysis_blob_name(ticker: str, analysis_date: date) -> str:
+    return f"analysis/{ticker.upper()}/{analysis_date.strftime('%Y-%m-%d')}.json"
+
+
+def _get_gcs_analysis_daily_index_blob_name(index_date: date) -> str:
+    return f"analysis/daily_index/{index_date.strftime('%Y-%m-%d')}.json"
+
+
+def _get_local_fallback_analysis_filepath(ticker: str, analysis_date: date) -> str:
+    ticker_dir = os.path.join(LOCAL_FALLBACK_ANALYSIS_DIR, ticker.upper())
+    os.makedirs(ticker_dir, exist_ok=True)
+    return os.path.join(ticker_dir, f"{analysis_date.strftime('%Y-%m-%d')}.json")
+
+
+def _get_local_fallback_analysis_index_filepath(index_date: date) -> str:
+    os.makedirs(LOCAL_FALLBACK_ANALYSIS_INDEX_DIR, exist_ok=True)
+    return os.path.join(LOCAL_FALLBACK_ANALYSIS_INDEX_DIR, f"{index_date.strftime('%Y-%m-%d')}.json")
+
+
+def _save_analysis_to_storage(ticker: str, analysis_date: date, analysis_data: Dict[str, Any]) -> str:
+    json_content_str = json.dumps(analysis_data, indent=2, ensure_ascii=False)
+    if GCS_BUCKET_NAME:
+        try:
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(GCS_BUCKET_NAME)
+            blob_name = _get_gcs_analysis_blob_name(ticker, analysis_date)
+            blob = bucket.blob(blob_name)
+            blob.upload_from_string(json_content_str, content_type="application/json")
+            logger.info("成功保存 %s analysis 到 GCS: gs://%s/%s", ticker, GCS_BUCKET_NAME, blob_name)
+            return f"gs://{GCS_BUCKET_NAME}/{blob_name}"
+        except Exception as exc:
+            logger.error("保存 %s analysis 到 GCS 失败: %s", ticker, exc)
+            return ""
+    filepath = _get_local_fallback_analysis_filepath(ticker, analysis_date)
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(json_content_str)
+        logger.warning("GCS_BUCKET_NAME 未设置。已保存 %s analysis 到本地 fallback: %s", ticker, filepath)
+        return filepath
+    except Exception as exc:
+        logger.error("保存 %s analysis 到本地 fallback 文件 %s 失败: %s", ticker, filepath, exc)
+        return ""
+
+
+def _load_analysis_daily_index_from_storage(index_date: date) -> List[Dict[str, Any]]:
+    if GCS_BUCKET_NAME:
+        try:
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(GCS_BUCKET_NAME)
+            blob_name = _get_gcs_analysis_daily_index_blob_name(index_date)
+            blob = bucket.blob(blob_name)
+            if not blob.exists():
+                return []
+            json_content = blob.download_as_text(encoding="utf-8")
+            data = json.loads(json_content)
+            return data if isinstance(data, list) else []
+        except Exception as exc:
+            logger.error("从 GCS 加载 %s 的 analysis daily index 失败: %s", index_date, exc)
+            return []
+
+    filepath = _get_local_fallback_analysis_index_filepath(index_date)
+    if not os.path.exists(filepath):
+        return []
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as exc:
+        logger.error("从本地 fallback 文件 %s 加载 %s 的 analysis daily index 失败: %s", filepath, index_date, exc)
+        return []
+
+
+def _save_analysis_daily_index_to_storage(index_date: date, index_list: List[Dict[str, Any]]) -> str:
+    json_content = json.dumps(index_list, indent=2, ensure_ascii=False)
+    if GCS_BUCKET_NAME:
+        try:
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(GCS_BUCKET_NAME)
+            blob_name = _get_gcs_analysis_daily_index_blob_name(index_date)
+            blob = bucket.blob(blob_name)
+            blob.upload_from_string(json_content, content_type="application/json")
+            logger.info("成功保存 %s 的 analysis daily index 到 GCS: gs://%s/%s", index_date, GCS_BUCKET_NAME, blob_name)
+            return f"gs://{GCS_BUCKET_NAME}/{blob_name}"
+        except Exception as exc:
+            logger.error("保存 %s 的 analysis daily index 到 GCS 失败: %s", index_date, exc)
+            return ""
+
+    filepath = _get_local_fallback_analysis_index_filepath(index_date)
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(json_content)
+        return filepath
+    except Exception as exc:
+        logger.error("保存 %s 的 analysis daily index 到本地 fallback 文件 %s 失败: %s", index_date, filepath, exc)
+        return ""
+
+
 def backfill_5_year_data_job(ticker: str) -> str:
     """
     获取指定股票 5 年的历史数据，并保存到 GCS (或本地 fallback)。
@@ -1139,8 +1243,34 @@ def _process_ticker_for_batch(ticker: str, current_date: date) -> Dict[str, str]
         daily_index.append({"ticker": ticker, "path": gcs_ai_context_path})
         _save_daily_index_to_storage(current_date, daily_index)
         
-        logger.info("成功为 %s 完成批量处理。AI Context 路径: %s", ticker, gcs_ai_context_path)
-        return {"status": "success", "filepath": gcs_ai_context_path}
+        analysis_path = ""
+        if GENERATE_ANALYSIS_IN_BATCH:
+            try:
+                df_for_analysis = _load_historical_data_from_storage(ticker)
+                if not df_for_analysis.empty:
+                    # Years is mostly meta for now; keep it stable for MVP.
+                    analysis_payload = _compute_analysis_from_df(
+                        symbol=ticker,
+                        df=df_for_analysis,
+                        years=5,
+                        weights_override=None,
+                        user_factor=None,
+                    )
+                    analysis_path = _save_analysis_to_storage(ticker, current_date, analysis_payload)
+                    if analysis_path:
+                        analysis_index = _load_analysis_daily_index_from_storage(current_date)
+                        analysis_index = [item for item in analysis_index if item.get("ticker") != ticker]
+                        analysis_index.append({"ticker": ticker, "path": analysis_path})
+                        _save_analysis_daily_index_to_storage(current_date, analysis_index)
+            except Exception as exc:
+                # Analysis precompute should not fail the whole batch; it can be computed on-demand later.
+                logger.warning("为 %s 预计算 analysis 失败（将跳过）: %s", ticker, exc)
+
+        logger.info("成功为 %s 完成批量处理。AI Context 路径: %s, Analysis 路径: %s", ticker, gcs_ai_context_path, analysis_path or "N/A")
+        result: Dict[str, str] = {"status": "success", "filepath": gcs_ai_context_path}
+        if analysis_path:
+            result["analysis_path"] = analysis_path
+        return result
 
     except Exception as exc:
         logger.error("为 %s 执行批量处理时出错: %s", ticker, exc)

@@ -32,11 +32,14 @@
 ## 部署流程
 
 1.  **克隆仓库**: 将此 `batch-orchestrator-job` 目录克隆到本地。
-2.  **配置 `deploy.sh`**: 打开 `deploy.sh` 脚本，将顶部的配置变量（`PROJECT_ID`, `GCP_REGION`, `JOB_NAME`, `SERVICE_ACCOUNT`, 各个服务 URL, `GCS_BUCKET_NAME`）替换为您自己的环境值。
+2.  **配置部署参数**:
+    -   直接传入项目 ID：`./deploy_batch_job.sh YOUR_PROJECT_ID`
+    -   或通过环境变量：`PROJECT_ID=YOUR_PROJECT_ID ./deploy_batch_job.sh`
+    -   如需切换到新项目，请同步更新四个引擎的 Cloud Run URL（`FINANCIAL_ENGINE_URL`/`TRADING_ENGINE_URL`/`NEWS_ENGINE_URL`/`QA_ENGINE_URL`）。
 3.  **执行部署**: 在终端中，运行脚本：
     ```bash
-    chmod +x deploy.sh
-    ./deploy.sh
+    chmod +x deploy_batch_job.sh
+    ./deploy_batch_job.sh YOUR_PROJECT_ID
     ```
     脚本将自动完成 Docker 镜像的构建、推送到 Artifact Registry 以及 Cloud Run Job 的部署。
 
