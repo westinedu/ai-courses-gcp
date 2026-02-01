@@ -713,8 +713,8 @@ def _resample_to_monthly(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     # 重采样到每月最后一个交易日
-    # 'M' 表示月末频率，agg函数会选择每个月的第一个开盘价、最高价、最低价、最后一个收盘价和总成交量
-    monthly_df = df.resample('M').agg(
+    # Pandas 2.2+ 中 'M' 已弃用/移除，需使用 'ME'（month end）
+    monthly_df = df.resample('ME').agg(
         Open=('Open', 'first'),
         High=('High', 'max'),
         Low=('Low', 'min'),

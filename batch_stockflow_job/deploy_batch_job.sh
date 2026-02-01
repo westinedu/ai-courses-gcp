@@ -23,14 +23,23 @@ NEWS_ENGINE_URL="${NEWS_ENGINE_URL:-}"
 QA_ENGINE_URL="${QA_ENGINE_URL:-}"
 
 # GCS 配置
-GCS_BUCKET_NAME="${GCS_BUCKET_NAME:-vcards-meta-data}"
-TICKER_LIST_PATH="${TICKER_LIST_PATH:-batch_config/ticker_list.json}"
+GCS_BUCKET_NAME="${GCS_BUCKET_NAME:-stockflow-trading-data-bucket}"
+# 默认直接复用 Trading Data Engine 的默认 ticker 文件
+TICKER_LIST_PATH="${TICKER_LIST_PATH:-config/default_tickers.json}"
 CARD_TYPES_PATH="${CARD_TYPES_PATH:-batch_config/card_types.json}"
 LLM_CONFIG_PATH="${LLM_CONFIG_PATH:-batch_config/llm_config.json}"
 ENGINE_CONTROL_PATH="${ENGINE_CONTROL_PATH:-batch_config/engine_control.json}" # <--- 新增
 
 # 可选：指定 Cloud Run Job 运行的服务账号
 SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-}"
+
+# backfill-only 模式：只调用交易数据引擎铺底/增量更新
+BACKFILL_ONLY="${BACKFILL_ONLY:-1}"
+TRADING_BATCH_SIZE="${TRADING_BATCH_SIZE:-3}"
+REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-300}"
+
+# 当未显式提供 TRADING_ENGINE_URL 时，尝试从 Cloud Run 自动发现（幂等、免手填）
+TRADING_ENGINE_SERVICE_NAME="${TRADING_ENGINE_SERVICE_NAME:-trading-data-engine}"
 
 # --- 脚本开始 ---
 if [ -z "${PROJECT_ID}" ] || [ "${PROJECT_ID}" = "(unset)" ]; then
@@ -41,13 +50,31 @@ if [ -z "${PROJECT_ID}" ] || [ "${PROJECT_ID}" = "(unset)" ]; then
   exit 1
 fi
 
-if [ -z "${FINANCIAL_ENGINE_URL}" ] || [ -z "${TRADING_ENGINE_URL}" ] || [ -z "${NEWS_ENGINE_URL}" ] || [ -z "${QA_ENGINE_URL}" ]; then
-  echo "错误: 需要先配置四个引擎的 Cloud Run URL。"
-  echo "请设置：FINANCIAL_ENGINE_URL / TRADING_ENGINE_URL / NEWS_ENGINE_URL / QA_ENGINE_URL"
-  echo "示例："
-  echo "  FINANCIAL_ENGINE_URL=https://... TRADING_ENGINE_URL=https://... NEWS_ENGINE_URL=https://... QA_ENGINE_URL=https://... \\"
-  echo "  ./deploy_batch_job.sh ${PROJECT_ID}"
-  exit 1
+if [ -z "${TRADING_ENGINE_URL}" ]; then
+  TRADING_ENGINE_URL="$(gcloud run services describe "${TRADING_ENGINE_SERVICE_NAME}" \
+    --region "${GCP_REGION}" \
+    --project "${PROJECT_ID}" \
+    --format='value(status.url)' 2>/dev/null)"
+fi
+
+if [ "${BACKFILL_ONLY}" = "1" ] || [ "${BACKFILL_ONLY}" = "true" ] || [ "${BACKFILL_ONLY}" = "TRUE" ]; then
+  if [ -z "${TRADING_ENGINE_URL}" ]; then
+    echo "错误: BACKFILL_ONLY=1 时必须设置 TRADING_ENGINE_URL。"
+    echo "（可选）也可以确保 Cloud Run 服务 '${TRADING_ENGINE_SERVICE_NAME}' 已部署并可被 gcloud 查询到。"
+    echo "示例："
+    echo "  BACKFILL_ONLY=1 TRADING_ENGINE_URL=https://... TICKER_LIST_PATH=config/default_tickers.json \\"
+    echo "  ./deploy_batch_job.sh ${PROJECT_ID}"
+    exit 1
+  fi
+else
+  if [ -z "${FINANCIAL_ENGINE_URL}" ] || [ -z "${TRADING_ENGINE_URL}" ] || [ -z "${NEWS_ENGINE_URL}" ] || [ -z "${QA_ENGINE_URL}" ]; then
+    echo "错误: 需要先配置四个引擎的 Cloud Run URL。"
+    echo "请设置：FINANCIAL_ENGINE_URL / TRADING_ENGINE_URL / NEWS_ENGINE_URL / QA_ENGINE_URL"
+    echo "示例："
+    echo "  FINANCIAL_ENGINE_URL=https://... TRADING_ENGINE_URL=https://... NEWS_ENGINE_URL=https://... QA_ENGINE_URL=https://... \\"
+    echo "  ./deploy_batch_job.sh ${PROJECT_ID}"
+    exit 1
+  fi
 fi
 
 SERVICE_ACCOUNT_ARGS=()
@@ -90,6 +117,9 @@ FINANCIAL_ENGINE_URL: "${FINANCIAL_ENGINE_URL}"
 TRADING_ENGINE_URL: "${TRADING_ENGINE_URL}"
 NEWS_ENGINE_URL: "${NEWS_ENGINE_URL}"
 QA_ENGINE_URL: "${QA_ENGINE_URL}"
+BACKFILL_ONLY: "${BACKFILL_ONLY}"
+TRADING_BATCH_SIZE: "${TRADING_BATCH_SIZE}"
+REQUEST_TIMEOUT: "${REQUEST_TIMEOUT}"
 EOF
 
 echo "[env] 环境变量已写入临时文件: $TMP_ENV"

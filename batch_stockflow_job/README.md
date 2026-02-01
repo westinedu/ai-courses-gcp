@@ -29,6 +29,30 @@
 -   `gs://<your-bucket-name>/config/ticker_list.json`: 一个包含股票代码字符串的 JSON 数组。
 -   `gs://<your-bucket-name>/config/card_types.json`: 一个包含图卡类型字符串的 JSON 数组。
 
+## 仅铺底交易数据（Backfill Only）
+
+如果你只想用 Cloud Run Job 调用 Trading Data Engine 来做“首次铺底 + 后续增量更新”，可以启用 `BACKFILL_ONLY=1`。
+
+-   **只要求**配置 `TRADING_ENGINE_URL`
+-   `TICKER_LIST_PATH` 可以直接指向 `config/default_tickers.json`（复用 Trading Data Engine 的默认 ticker 列表文件）
+-   Job 会按 `TRADING_BATCH_SIZE` 分批顺序调用 `POST /trading_data/batch_refresh`
+
+示例：
+
+```bash
+BACKFILL_ONLY=1 \
+TRADING_ENGINE_URL=https://trading-data-engine-xxxxx.us-central1.run.app \
+GCS_BUCKET_NAME=stockflow-trading-data-bucket \
+TICKER_LIST_PATH=config/default_tickers.json \
+TRADING_BATCH_SIZE=3 \
+REQUEST_TIMEOUT=300 \
+./deploy_batch_job.sh adviceboost
+```
+
+说明：默认情况下 `deploy_batch_job.sh` 已内置 `BACKFILL_ONLY=1`、`GCS_BUCKET_NAME=stockflow-trading-data-bucket`、
+`TICKER_LIST_PATH=config/default_tickers.json`、`TRADING_BATCH_SIZE=3`、`REQUEST_TIMEOUT=300`，并会在未提供
+`TRADING_ENGINE_URL` 时尝试自动从 Cloud Run 查询 `trading-data-engine` 的 URL（可用 `TRADING_ENGINE_SERVICE_NAME` 覆盖）。
+
 ## 部署流程
 
 1.  **克隆仓库**: 将此 `batch-orchestrator-job` 目录克隆到本地。

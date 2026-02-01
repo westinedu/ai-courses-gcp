@@ -31,12 +31,15 @@ class Settings(BaseSettings):
     # --- 新增配置项 ---
     engine_control_path: str = Field("batch_config/engine_control.json", description="GCS 中数据引擎控制文件的路径")
 
-    financial_engine_url: str = Field(..., description="财报数据引擎的 URL")
-    trading_engine_url: str = Field(..., description="交易数据引擎的 URL")
-    news_engine_url: str = Field(..., description="新闻爬虫引擎的 URL")
-    qa_engine_url: str = Field(..., description="QA 引擎的 URL")
+    # 注意：当 backfill_only=true 时，只需要 trading_engine_url；其他 URL 可为空。
+    financial_engine_url: str = Field("", description="财报数据引擎的 URL")
+    trading_engine_url: str = Field("", description="交易数据引擎的 URL")
+    news_engine_url: str = Field("", description="新闻爬虫引擎的 URL")
+    qa_engine_url: str = Field("", description="QA 引擎的 URL")
     
     request_timeout: int = Field(300, description="对下游服务的请求超时时间（秒）")
+    backfill_only: bool = Field(False, description="仅执行交易数据铺底/增量更新（跳过财报/新闻/QA）")
+    trading_batch_size: int = Field(3, description="交易数据引擎批量刷新时的 ticker 分批大小（防止请求超时）")
 
 settings = Settings()
 
@@ -230,6 +233,30 @@ async def run_trading_batch(client: httpx.AsyncClient, tickers: List[str]):
     except httpx.RequestError as e:
         logger.error(f"调用交易数据引擎时发生网络错误: {e}")
         raise
+
+def _chunk_list(values: List[str], chunk_size: int) -> List[List[str]]:
+    if chunk_size <= 0:
+        return [values]
+    return [values[i:i + chunk_size] for i in range(0, len(values), chunk_size)]
+
+
+async def run_trading_backfill_only(client: httpx.AsyncClient, tickers: List[str]) -> None:
+    """只调用交易数据引擎铺底/增量更新（按批次顺序执行）。"""
+    cleaned = [t.strip().upper() for t in tickers if isinstance(t, str) and t.strip()]
+    if not cleaned:
+        logger.warning("ticker 列表为空，跳过交易数据铺底。")
+        return
+    if not settings.trading_engine_url:
+        raise RuntimeError("TRADING_ENGINE_URL 未配置，无法调用交易数据引擎。")
+
+    batch_size = max(1, int(settings.trading_batch_size))
+    batches = _chunk_list(cleaned, batch_size)
+    logger.info("交易数据铺底模式：共 %d 个 ticker，分 %d 批（每批 %d）。", len(cleaned), len(batches), batch_size)
+
+    for idx, batch in enumerate(batches, start=1):
+        logger.info("  -> Trading backfill batch %d/%d: %s", idx, len(batches), ",".join(batch))
+        await run_trading_batch(client, batch)
+        logger.info("  <- Trading backfill batch %d/%d 完成", idx, len(batches))
 
 async def run_news_batch(client: httpx.AsyncClient, targets: List[Dict[str, Any]]):
     """顺序调用新闻爬虫引擎，支持股票 ticker 与专题目标"""
@@ -455,6 +482,17 @@ async def main():
     logger.info("====== 开始执行批量编排 Job ======")
 
     try:
+        # --- backfill-only：只读取 tickers，然后触发交易引擎 ---
+        if settings.backfill_only:
+            tickers = load_gcs_json(settings.gcs_bucket_name, settings.ticker_list_path) or []
+            if not isinstance(tickers, list) or not all(isinstance(t, str) for t in tickers):
+                logger.error("ticker_list_path=%s 的内容格式无效（应为字符串数组）。", settings.ticker_list_path)
+                return
+            async with httpx.AsyncClient() as client:
+                await run_trading_backfill_only(client, tickers)
+            logger.info("====== 交易数据铺底 Job 执行完毕（BACKFILL_ONLY） ======")
+            return
+
         # --- 修改：加载配置 ---
         tickers = load_gcs_json(settings.gcs_bucket_name, settings.ticker_list_path)
         card_types_config = load_gcs_json(settings.gcs_bucket_name, settings.card_types_path)
