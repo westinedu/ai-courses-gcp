@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+.env
+
+# macOS
+.DS_Store
+
+# Node
+node_modules/
+services_updated/
+base_data/
+base_data 2/
+raw-news*/
+venv*/
+images/
+logos/
+output/
+
+
+# VSCode
+.vscode/
+
+# Logs
+*.log
+
+# Docker
+*.tar
+AI_calendar/

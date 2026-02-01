@@ -1,0 +1,7 @@
+# requirements.txt
+fastapi
+pydantic
+pydantic-settings
+google-cloud-storage
+httpx[http2]
+google-auth

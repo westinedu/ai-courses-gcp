@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Python / Node cache
+__pycache__/
+node_modules/
+.cache/
+
+# GCP / Secret
+*.json
+!example*.json
+
+# Logs
+*.log
+
+# Temp
+tmp/
+temp/
