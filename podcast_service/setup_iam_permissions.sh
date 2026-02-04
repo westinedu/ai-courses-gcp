@@ -8,9 +8,17 @@ set -e
 echo "🔐 配置 Signed URL IAM 权限"
 echo "════════════════════════════════════════════"
 
-# 获取配置
-PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-able-engine-466308-q2}"
-SA_EMAIL="${GOOGLE_SERVICE_ACCOUNT_EMAIL:-355131621961-compute@developer.gserviceaccount.com}"
+# 获取配置（不要默认到旧项目/旧账号，避免误授权）
+PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-}"
+SA_EMAIL="${GOOGLE_SERVICE_ACCOUNT_EMAIL:-}"
+
+if [[ -z "${PROJECT_ID}" || -z "${SA_EMAIL}" ]]; then
+  echo "ERROR: 请先设置 GOOGLE_CLOUD_PROJECT 与 GOOGLE_SERVICE_ACCOUNT_EMAIL"
+  echo "例如："
+  echo "  export GOOGLE_CLOUD_PROJECT='your-project-id'"
+  echo "  export GOOGLE_SERVICE_ACCOUNT_EMAIL='podcast-service@your-project-id.iam.gserviceaccount.com'"
+  exit 1
+fi
 
 echo "📋 配置信息:"
 echo "  项目 ID: $PROJECT_ID"

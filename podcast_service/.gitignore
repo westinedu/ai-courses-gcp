@@ -40,6 +40,10 @@ env/
 .env
 
 # Google Cloud credentials (SENSITIVE!)
+key.json
+*_key.json
+*service-account*.json
+able-engine-466308-q2-7ae4754c4a4a.json
 
 
 # Generated files

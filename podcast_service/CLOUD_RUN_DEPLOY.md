@@ -25,11 +25,13 @@ gcloud services enable \
 gcloud iam service-accounts create podcast-service \
   --display-name "Podcast Service"
 
-# 授予权限
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:podcast-service@${PROJECT_ID}.iam.gserviceaccount.com" \
-  --role="roles/texttospeech.client"
-
+# 授予权限（最小可用）
+#
+# 注意：Cloud Text-to-Speech 的“普通合成”接口通常不需要额外的 IAM 角色；
+# 只要启用 API，并让 Cloud Run 使用该服务账号即可。
+#
+# 本项目常见需要的是：
+# - GCS 上传/读取（按需给到 bucket 级权限，示例这里用项目级 storage.admin，生产建议收敛到 bucket 级 objectAdmin）
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="serviceAccount:podcast-service@${PROJECT_ID}.iam.gserviceaccount.com" \
   --role="roles/storage.admin"

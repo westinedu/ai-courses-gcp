@@ -10,13 +10,25 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 
+# Optional: load local env file (useful for local deploy)
+# Note: keeping real secrets in git is NOT recommended; prefer Secret Manager on Cloud Run.
+if [[ -f ".env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source ".env"
+  set +a
+fi
+
 PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}"
 REGION="${REGION:-us-central1}"
 SERVICE_NAME="${SERVICE_NAME:-podcast-service}"
 REPOSITORY="${REPOSITORY:-podcast-service-images}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${SERVICE_NAME}:${IMAGE_TAG}"
-GCS_BUCKET_NAME="${GCS_BUCKET_NAME:-podcast-service-data}"
+# Bucket for storing scripts/audio (already created in your project).
+GCS_BUCKET_NAME="${GCS_BUCKET_NAME:-podcast-service-bucket}"
+OPENAI_API_KEY_SECRET="${OPENAI_API_KEY_SECRET:-openai-api-key}"
+OPENAI_API_KEY_SECRET_VERSION="${OPENAI_API_KEY_SECRET_VERSION:-latest}"
 
 echo "[Deploy] project=${PROJECT_ID} region=${REGION} service=${SERVICE_NAME}"
 echo "[Deploy] repository=${REPOSITORY} image=${IMAGE}"
@@ -35,6 +47,7 @@ for file in "${REQUIRED_FILES[@]}"; do
 done
 
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com iamcredentials.googleapis.com \
+  texttospeech.googleapis.com secretmanager.googleapis.com storage.googleapis.com \
   --project "${PROJECT_ID}"
 
 if ! gcloud artifacts repositories describe "${REPOSITORY}" \
@@ -54,14 +67,21 @@ gcloud builds submit \
   --tag "${IMAGE}"
 
 # ------------------------------------------------------------------------------
-# 直接在脚本中声明需要注入 Cloud Run 的环境变量
-# 根据实际情况修改以下键值对（仅示例）
+# Cloud Run 环境变量 / Secret 注入
+# - 推荐：使用 Secret Manager 注入 OPENAI_API_KEY（不会出现在命令行历史里）
+# - 本地快速验证：也可直接导出 OPENAI_API_KEY 环境变量（不推荐在脚本里写死）
 # ------------------------------------------------------------------------------
 ENV_VARS=(
-  "OPENAI_API_KEY=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"
   "GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
   "GCS_BUCKET_NAME=${GCS_BUCKET_NAME}"
 )
+
+SECRETS=()
+if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+  ENV_VARS+=("OPENAI_API_KEY=${OPENAI_API_KEY}")
+else
+  SECRETS+=("OPENAI_API_KEY=${OPENAI_API_KEY_SECRET}:${OPENAI_API_KEY_SECRET_VERSION}")
+fi
 
 join_by_comma() {
   local IFS=","
@@ -69,6 +89,10 @@ join_by_comma() {
 }
 
 ENV_VARS_STR=$(join_by_comma "${ENV_VARS[@]}")
+SECRETS_STR=""
+if declare -p SECRETS >/dev/null 2>&1 && [[ ${#SECRETS[@]} -gt 0 ]]; then
+  SECRETS_STR=$(join_by_comma "${SECRETS[@]}")
+fi
 
 DEPLOY_ARGS=(
   gcloud run deploy "${SERVICE_NAME}"
@@ -85,6 +109,10 @@ DEPLOY_ARGS=(
 
 if [[ -n "${ENV_VARS_STR}" ]]; then
   DEPLOY_ARGS+=(--set-env-vars "${ENV_VARS_STR}")
+fi
+
+if [[ -n "${SECRETS_STR}" ]]; then
+  DEPLOY_ARGS+=(--set-secrets "${SECRETS_STR}")
 fi
 
 if [[ -n "${SERVICE_ACCOUNT:-}" ]]; then
