@@ -69,6 +69,51 @@ class GCSUploader:
         return f"gs://{bucket_name}/{destination_path}"
 
     @classmethod
+    def blob_exists(cls, bucket_name: str, blob_name: str) -> bool:
+        if not bucket_name:
+            raise ValueError("bucket_name 不能为空")
+        if not blob_name:
+            raise ValueError("blob_name 不能为空")
+        client = cls._get_client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        return bool(blob.exists())
+
+    @classmethod
+    def download_json(cls, bucket_name: str, blob_name: str) -> dict:
+        if not bucket_name:
+            raise ValueError("bucket_name 不能为空")
+        if not blob_name:
+            raise ValueError("blob_name 不能为空")
+        client = cls._get_client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        raw = blob.download_as_text(encoding="utf-8")
+        import json
+
+        return json.loads(raw)
+
+    @classmethod
+    def upload_json(
+        cls,
+        bucket_name: str,
+        blob_name: str,
+        payload: dict,
+        content_type: str = "application/json; charset=utf-8",
+    ) -> str:
+        if not bucket_name:
+            raise ValueError("bucket_name 不能为空")
+        if not blob_name:
+            raise ValueError("blob_name 不能为空")
+        client = cls._get_client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        import json
+
+        blob.upload_from_string(json.dumps(payload, ensure_ascii=False, indent=2), content_type=content_type)
+        return f"gs://{bucket_name}/{blob_name}"
+
+    @classmethod
     def generate_signed_url(
         cls,
         bucket_name: str,
@@ -210,4 +255,3 @@ class GCSUploader:
             "无法获取服务账号邮箱。请设置环境变量 GOOGLE_SERVICE_ACCOUNT_EMAIL，"
             "或确保运行在 Google Cloud（Cloud Run/GKE）环境中。"
         )
-

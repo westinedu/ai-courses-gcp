@@ -31,6 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from enum import Enum
 from google.cloud import texttospeech
+import re
 
 # 自动加载环境变量（必须在导入其他模块之前）
 from src.env_config import load_env, get_config
@@ -83,6 +84,11 @@ class GeneratePodcastRequest(BaseModel):
     custom_instructions: Optional[str] = Field(default=None, description="自定义生成指令")
     generate_audio: bool = Field(default=False, description="是否生成 MP3 音频文件（使用 Google Cloud TTS）")
     tts_engine: str = Field(default="google-cloud", description="TTS 引擎选择 (google-cloud)")
+    cache_key_prefix: Optional[str] = Field(
+        default=None,
+        description="可选：GCS 缓存 key 前缀（例如 stockflow/us/AAPL/2026-02-04/zh/chinese_2_hosts/dur5）。启用后会先查 manifest.json 命中则直接返回。",
+    )
+    use_cache: bool = Field(default=True, description="当 cache_key_prefix 且已配置 GCS_BUCKET_NAME 时，是否启用缓存命中")
 
     class Config:
         example = {
@@ -123,6 +129,20 @@ class GeneratePodcastResponse(BaseModel):
     message: str
     timestamp: datetime
     generation_time_seconds: float
+    cached: Optional[bool] = None
+    cache_key_prefix: Optional[str] = None
+
+
+def _sanitize_cache_prefix(prefix: str) -> str:
+    v = (prefix or "").strip().strip("/")
+    if not v:
+        raise ValueError("cache_key_prefix 不能为空")
+    if ".." in v or v.startswith(".") or v.startswith("/"):
+        raise ValueError("cache_key_prefix 非法")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._\\-/]{0,512}", v):
+        raise ValueError("cache_key_prefix 包含不支持字符")
+    v = re.sub(r"/{2,}", "/", v)
+    return v
 
 class ScriptResponse(BaseModel):
     """脚本响应"""
@@ -321,6 +341,62 @@ async def generate_podcast_v4(request: GeneratePodcastRequest):
     logger.info("="*80)
     
     try:
+        # 0️⃣ GCS 缓存命中（按 cache_key_prefix）
+        cache_prefix = None
+        if gcs_bucket_name and request.cache_key_prefix and request.use_cache:
+            try:
+                cache_prefix = _sanitize_cache_prefix(request.cache_key_prefix)
+                manifest_blob = f"{cache_prefix}/manifest.json"
+                if GCSUploader.blob_exists(gcs_bucket_name, manifest_blob):
+                    manifest = GCSUploader.download_json(gcs_bucket_name, manifest_blob)
+                    script_blob = str(manifest.get("script_blob") or "")
+                    audio_blob = str(manifest.get("audio_blob") or "")
+
+                    script_uri = f"gs://{gcs_bucket_name}/{script_blob}" if script_blob else ""
+                    audio_uri = f"gs://{gcs_bucket_name}/{audio_blob}" if audio_blob else None
+
+                    script_signed_url = (
+                        GCSUploader.generate_signed_url(gcs_bucket_name, script_blob, expiration_hours=24)
+                        if script_blob
+                        else None
+                    )
+                    audio_signed_url = (
+                        GCSUploader.generate_signed_url(gcs_bucket_name, audio_blob, expiration_hours=24)
+                        if audio_blob
+                        else None
+                    )
+
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    return GeneratePodcastResponse(
+                        status="success",
+                        podcast_name=str(manifest.get("podcast_name") or ""),
+                        podcast_id=str(manifest.get("podcast_id") or ""),
+                        topic=str(manifest.get("topic") or request.topic),
+                        style=str(manifest.get("style") or request.style_name),
+                        tone=str(manifest.get("tone") or request.tone),
+                        dialogue_style=str(manifest.get("dialogue_style") or request.dialogue_style),
+                        duration_minutes=int(manifest.get("duration_minutes") or request.duration_minutes),
+                        language=str(manifest.get("language") or request.language),
+                        num_speakers=int(manifest.get("num_speakers") or 0),
+                        script_file=script_uri,
+                        script_file_signed_url=script_signed_url,
+                        audio_file=audio_uri,
+                        audio_file_signed_url=audio_signed_url,
+                        audio_file_size_bytes=manifest.get("audio_file_size_bytes"),
+                        audio_duration_seconds=manifest.get("audio_duration_seconds"),
+                        script_preview=manifest.get("script_preview"),
+                        token_usage=manifest.get("token_usage"),
+                        tts_character_count=manifest.get("tts_character_count"),
+                        cost_breakdown=manifest.get("cost_breakdown"),
+                        message="✅ cache hit",
+                        timestamp=datetime.now(),
+                        generation_time_seconds=elapsed,
+                        cached=True,
+                        cache_key_prefix=cache_prefix,
+                    )
+            except Exception as cache_err:
+                logger.warning(f"⚠️ 缓存检查失败，继续实时生成: {cache_err}")
+
         # 1️⃣ 生成播客 ID 和名称
         podcast_id = f"podcast_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         podcast_name = request.podcast_name or f"{request.style_name}_{podcast_id}"
@@ -465,11 +541,20 @@ CRITICAL REQUIREMENTS:
         script_uri = str(script_path)
         if gcs_bucket_name:
             try:
-                script_uri = GCSUploader.upload_file(
-                    local_path=script_path,
-                    bucket_name=gcs_bucket_name,
-                    destination_path=f"generated_scripts/{script_path.name}",
-                )
+                if cache_prefix:
+                    script_blob = f"{cache_prefix}/script.json"
+                    script_uri = GCSUploader.upload_file(
+                        local_path=script_path,
+                        bucket_name=gcs_bucket_name,
+                        destination_path=script_blob,
+                    )
+                else:
+                    script_blob = f"generated_scripts/{script_path.name}"
+                    script_uri = GCSUploader.upload_file(
+                        local_path=script_path,
+                        bucket_name=gcs_bucket_name,
+                        destination_path=script_blob,
+                    )
                 logger.info(f"☁️ 脚本已上传至 GCS: {script_uri}")
             except Exception as upload_err:
                 logger.error(f"❌ 脚本上传 GCS 失败: {upload_err}", exc_info=True)
@@ -544,11 +629,20 @@ CRITICAL REQUIREMENTS:
                     audio_uri = audio_file
                     if gcs_bucket_name:
                         try:
-                            audio_uri = GCSUploader.upload_file(
-                                local_path=Path(output_path),
-                                bucket_name=gcs_bucket_name,
-                                destination_path=f"generated_podcasts/{Path(output_path).name}",
-                            )
+                            if cache_prefix:
+                                audio_blob = f"{cache_prefix}/audio.mp3"
+                                audio_uri = GCSUploader.upload_file(
+                                    local_path=Path(output_path),
+                                    bucket_name=gcs_bucket_name,
+                                    destination_path=audio_blob,
+                                )
+                            else:
+                                audio_blob = f"generated_podcasts/{Path(output_path).name}"
+                                audio_uri = GCSUploader.upload_file(
+                                    local_path=Path(output_path),
+                                    bucket_name=gcs_bucket_name,
+                                    destination_path=audio_blob,
+                                )
                             logger.info(f"☁️ 音频已上传至 GCS: {audio_uri}")
                         except Exception as upload_err:
                             logger.error(f"❌ 音频上传 GCS 失败: {upload_err}", exc_info=True)
@@ -654,8 +748,41 @@ CRITICAL REQUIREMENTS:
             message=f"✅ 播客脚本生成成功! 包含 {len(script.segments)} 个段落，预计 {script.estimated_duration_seconds:.0f} 秒。" + 
                    (f"\n🎵 音频文件已生成: {audio_display_path.split('/')[-1]}" if audio_display_path else ""),
             timestamp=datetime.now(),
-            generation_time_seconds=elapsed
+            generation_time_seconds=elapsed,
+            cached=False if cache_prefix else None,
+            cache_key_prefix=cache_prefix,
         )
+
+        # 11️⃣ 写入缓存 manifest（如果启用 cache_prefix）
+        if gcs_bucket_name and cache_prefix:
+            try:
+                script_blob = f"{cache_prefix}/script.json"
+                audio_blob = f"{cache_prefix}/audio.mp3" if (audio_uri and str(audio_uri).startswith("gs://")) else ""
+                manifest = {
+                    "version": 1,
+                    "podcast_id": podcast_id,
+                    "podcast_name": podcast_name,
+                    "topic": request.topic,
+                    "style": request.style_name,
+                    "tone": tone.value,
+                    "dialogue_style": dialogue_style.value,
+                    "duration_minutes": request.duration_minutes,
+                    "language": request.language,
+                    "num_speakers": num_speakers,
+                    "script_blob": script_blob,
+                    "audio_blob": audio_blob,
+                    "script_preview": response.script_preview,
+                    "token_usage": response.token_usage,
+                    "tts_character_count": response.tts_character_count,
+                    "cost_breakdown": response.cost_breakdown,
+                    "audio_duration_seconds": response.audio_duration_seconds,
+                    "audio_file_size_bytes": response.audio_file_size_bytes,
+                    "created_at": datetime.now().isoformat(),
+                }
+                GCSUploader.upload_json(gcs_bucket_name, f"{cache_prefix}/manifest.json", manifest)
+                logger.info(f"✅ 已写入缓存 manifest: gs://{gcs_bucket_name}/{cache_prefix}/manifest.json")
+            except Exception as manifest_err:
+                logger.error(f"❌ 写入缓存 manifest 失败: {manifest_err}", exc_info=True)
         
         return response
         

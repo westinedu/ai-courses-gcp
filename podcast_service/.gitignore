@@ -37,7 +37,7 @@ env/
 # Environment variables (SENSITIVE!)
 .env.local
 .env.*.local
-.env
+.env*
 
 # Google Cloud credentials (SENSITIVE!)
 key.json
