@@ -1,0 +1,50 @@
+# Cloud Run 部署配置
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: podcast-service
+  namespace: default
+spec:
+  template:
+    spec:
+      containers:
+      - image: gcr.io/YOUR_PROJECT_ID/podcast-service:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openai-secret
+              key: api-key
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /var/run/secrets/cloud.google.com/service_account/key.json
+        volumeMounts:
+        - name: google-cloud-key
+          mountPath: /var/run/secrets/cloud.google.com/service_account
+        resources:
+          limits:
+            memory: "2Gi"
+            cpu: "2"
+          requests:
+            memory: "1Gi"
+            cpu: "1"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      volumes:
+      - name: google-cloud-key
+        secret:
+          secretName: gcp-service-account
+      serviceAccountName: podcast-service
+      timeout: 300s

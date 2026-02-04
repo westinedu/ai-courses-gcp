@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>播客生成器 - 从新闻生成播客</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            font-size: 16px;
+            opacity: 0.9;
+        }
+        
+        .content {
+            padding: 40px;
+        }
+        
+        .form-group {
+            margin-bottom: 25px;
+        }
+        
+        .form-group label {
+            display: block;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .form-group textarea {
+            font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+            resize: vertical;
+            min-height: 300px;
+            line-height: 1.6;
+        }
+        
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 16px;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            width: 100%;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn:active {
+            transform: translateY(0);
+        }
+        
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .result {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 12px;
+            display: none;
+        }
+        
+        .result.show {
+            display: block;
+        }
+        
+        .result h3 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+        
+        .result-item {
+            margin-bottom: 10px;
+            padding: 10px;
+            background: white;
+            border-radius: 6px;
+        }
+        
+        .result-item strong {
+            color: #667eea;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .loading.show {
+            display: block;
+        }
+        
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .error {
+            background: #fee;
+            border: 2px solid #fcc;
+            color: #c00;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            display: none;
+        }
+        
+        .error.show {
+            display: block;
+        }
+        
+        .tip {
+            background: #e3f2fd;
+            border-left: 4px solid #2196f3;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+            font-size: 14px;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎙️ AI 播客生成器</h1>
+            <p>从新闻文本直接生成专业播客脚本</p>
+        </div>
+        
+        <div class="content">
+            <div class="tip">
+                💡 <strong>使用提示：</strong>直接粘贴任何新闻文章或文本内容到下方文本框，系统将基于真实内容生成播客脚本，不会编造事实。
+            </div>
+            
+            <form id="podcastForm">
+                <div class="form-group">
+                    <label for="topic">播客主题 *</label>
+                    <input type="text" id="topic" name="topic" placeholder="例如：加密货币市场操纵分析" required>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="duration">目标时长（分钟）*</label>
+                        <input type="number" id="duration" name="duration" min="1" max="30" value="5" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="style">播客风格 *</label>
+                        <select id="style" name="style">
+                            <optgroup label="🇺🇸 英文模板">
+                                <option value="english_2_hosts">英文 - 双主持人对话</option>
+                                <option value="english_3_experts">英文 - 三人专家论坛</option>
+                                <option value="english_4_panel" selected>英文 - 四人圆桌讨论</option>
+                            </optgroup>
+                            <optgroup label="🇰🇷 韩文模板">
+                                <option value="korean_2_hosts">韩文 - 双主持人对话</option>
+                                <option value="korean_3_experts">韩文 - 三人专家讨论</option>
+                            </optgroup>
+                            <optgroup label="🇨🇳 中文模板">
+                                <option value="chinese_2_hosts">中文 - 双主持人对话</option>
+                            </optgroup>
+                            <optgroup label="🇯🇵 日文模板">
+                                <option value="japanese_4_panel">日文 - 四人圆桌讨论</option>
+                            </optgroup>
+                            <optgroup label="🌍 双语模板">
+                                <option value="english_korean_bilingual">英韩双语 - 跨文化讨论</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="tone">语调风格</label>
+                        <select id="tone" name="tone">
+                            <option value="professional">专业严肃</option>
+                            <option value="casual">轻松随意</option>
+                            <option value="educational">教育性</option>
+                            <option value="entertaining">娱乐性</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="dialogue_style">对话风格</label>
+                        <select id="dialogue_style" name="dialogue_style">
+                            <option value="conversation">随意对话</option>
+                            <option value="interview">采访对话</option>
+                            <option value="debate">辩论讨论</option>
+                            <option value="panel">专家论坛</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="source_content">新闻内容 * （直接粘贴，无需转义）</label>
+                    <textarea id="source_content" name="source_content" placeholder="在这里粘贴完整的新闻文章内容...
+
+例如：
+--- Article: 标题 ---
+Summary: 摘要内容...
+Highlights: 重点内容...
+
+支持任何格式的文本，系统会自动处理。" required></textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="generate_audio" name="generate_audio">
+                        同时生成音频文件（需要更长时间）
+                    </label>
+                </div>
+                
+                <button type="submit" class="btn" id="submitBtn">🎬 开始生成播客</button>
+            </form>
+            
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>正在生成播客脚本，请稍候...</p>
+                <p style="font-size: 14px; color: #666; margin-top: 10px;">这可能需要15-30秒</p>
+            </div>
+            
+            <div class="error" id="error"></div>
+            
+            <div class="result" id="result">
+                <h3>✅ 生成成功！</h3>
+                <div class="result-item">
+                    <strong>标题：</strong><span id="result-title"></span>
+                </div>
+                <div class="result-item">
+                    <strong>描述：</strong><span id="result-description"></span>
+                </div>
+                <div class="result-item">
+                    <strong>段落数：</strong><span id="result-segments"></span>
+                </div>
+                <div class="result-item">
+                    <strong>预计时长：</strong><span id="result-duration"></span>
+                </div>
+                <div class="result-item">
+                    <strong>脚本文件：</strong><span id="result-script-file"></span>
+                </div>
+                <div class="result-item">
+                    <strong>脚本 GCS 路径：</strong><span id="result-script-gcs"></span>
+                </div>
+                <div class="result-item">
+                    <strong>脚本下载：</strong> <span id="result-script-download"></span>
+                </div>
+                <div class="result-item" id="audio-file-container" style="display: none;">
+                    <strong>音频文件：</strong><span id="result-audio-file"></span>
+                </div>
+                <div class="result-item">
+                    <strong>音频下载：</strong> <span id="result-audio-download"></span>
+                </div>
+                <div class="result-item">
+                    <strong>Token使用：</strong><span id="result-tokens"></span>
+                </div>
+                <div class="result-item">
+                    <strong>LLM 消耗估算 (可配置)：</strong>
+                    <div style="margin-top:8px;">
+                        <label style="font-weight:600">每 1,000,000 tokens 价格 (USD): </label>
+                        <input id="token-price-per-million" type="number" step="0.01" value="1.00" style="width:120px; margin-left:8px;" />
+                        <div style="margin-top:6px;">估算: <span id="result-token-cost">-</span> USD</div>
+                    </div>
+                </div>
+                <div class="result-item">
+                    <strong>Google TTS 消费估算：</strong>
+                    <div style="margin-top:8px;">
+                        <label style="font-weight:600">每 1,000,000 字符 价格 (USD): </label>
+                        <input id="tts-price-per-million" type="number" step="0.01" value="30.00" style="width:120px; margin-left:8px;" />
+                        <div style="margin-top:6px;">估算: <span id="result-tts-cost">-</span> USD （基于返回的字符数或音频时长）</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const API_ENDPOINT = 'https://podcast-service-355131621961.us-central1.run.app/v4/generate';
+
+        const form = document.getElementById('podcastForm');
+        const loading = document.getElementById('loading');
+        const result = document.getElementById('result');
+        const error = document.getElementById('error');
+        const submitBtn = document.getElementById('submitBtn');
+    const resultScriptGcs = document.getElementById('result-script-gcs');
+    const resultScriptDownload = document.getElementById('result-script-download');
+    const resultAudioDownload = document.getElementById('result-audio-download');
+    const tokenPriceInput = document.getElementById('token-price-per-million');
+    const resultTokenCost = document.getElementById('result-token-cost');
+    const ttsPriceInput = document.getElementById('tts-price-per-million');
+    const resultTtsCost = document.getElementById('result-tts-cost');
+
+    // 缓存最近一次统计值，便于价格变更时即时重算
+    let lastTotalTokens = 0;
+    let lastTtsChars = 0;
+
+    function updateTokenCost() {
+        try {
+            const pricePerMillion = parseFloat(tokenPriceInput.value) || 0;
+            if (lastTotalTokens > 0 && pricePerMillion >= 0) {
+                const cost = (lastTotalTokens / 1000000) * pricePerMillion;
+                resultTokenCost.textContent = cost.toFixed(4);
+            }
+        } catch (_) { /* noop */ }
+    }
+
+    function updateTtsCost() {
+        try {
+            const pricePerMillion = parseFloat(ttsPriceInput.value) || 0;
+            if (lastTtsChars > 0 && pricePerMillion >= 0) {
+                const ttsCost = (lastTtsChars / 1000000) * pricePerMillion;
+                resultTtsCost.textContent = `$${ttsCost.toFixed(4)} (≈ ${lastTtsChars} 字符)`;
+            }
+        } catch (_) { /* noop */ }
+    }
+
+    tokenPriceInput.addEventListener('input', updateTokenCost);
+    ttsPriceInput.addEventListener('input', updateTtsCost);
+        
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            // 重置状态
+            loading.classList.add('show');
+            result.classList.remove('show');
+            error.classList.remove('show');
+            submitBtn.disabled = true;
+            
+            // 收集表单数据
+            const formData = {
+                topic: document.getElementById('topic').value,
+                duration_minutes: parseInt(document.getElementById('duration').value),
+                style_name: document.getElementById('style').value,
+                tone: document.getElementById('tone').value,
+                dialogue_style: document.getElementById('dialogue_style').value,
+                source_content: document.getElementById('source_content').value,
+                generate_audio: document.getElementById('generate_audio').checked
+            };
+            
+            try {
+                // 发送请求
+                const response = await fetch(API_ENDPOINT, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(formData)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // 🔍 详细的调试输出
+                console.log('═════════════════════════════════════════════');
+                console.log('📋 API 响应详情');
+                console.log('═════════════════════════════════════════════');
+                console.log('完整响应:', data);
+                if (data.script_file_signed_url) {
+                    console.log('✅ 脚本 Signed URL (24h 有效):');
+                    console.log(data.script_file_signed_url);
+                } else {
+                    console.warn('⚠️ 脚本 Signed URL: 未生成');
+                }
+                if (data.audio_file_signed_url) {
+                    console.log('✅ 音频 Signed URL (24h 有效):');
+                    console.log(data.audio_file_signed_url);
+                } else {
+                    console.warn('⚠️ 音频 Signed URL: 未生成');
+                }
+                console.log('═════════════════════════════════════════════');
+                
+                if (data.status === 'success') {
+                    // 显示结果
+                    document.getElementById('result-title').textContent = data.script_preview.title;
+                    document.getElementById('result-description').textContent = data.script_preview.description;
+                    document.getElementById('result-segments').textContent = data.script_preview.num_segments;
+                    document.getElementById('result-duration').textContent = `${data.script_preview.estimated_duration_seconds.toFixed(1)} 秒 (约 ${(data.script_preview.estimated_duration_seconds / 60).toFixed(1)} 分钟)`;
+                    document.getElementById('result-script-file').textContent = data.script_file;
+
+                    // 显示原始 GCS 路径（如果是 gs:// 则显示）
+                    resultScriptGcs.textContent = data.script_file || '';
+
+                    // 构建可点击下载链接（使用 signed URL）
+                    function makeDownloadLink(signedUrl, filename) {
+                        if (!signedUrl) return '-';
+                        
+                        const a = document.createElement('a');
+                        a.href = signedUrl;
+                        a.download = filename || true;
+                        a.target = '_blank';
+                        a.rel = 'noopener noreferrer';
+                        a.textContent = filename || '下载';
+                        a.style.cssText = 'color: #667eea; text-decoration: underline; cursor: pointer;';
+                        return a;
+                    }
+
+                    // 脚本下载（仅使用 signed URL）
+                    resultScriptDownload.innerHTML = '';
+                    if (data.script_file_signed_url) {
+                        const scriptLink = makeDownloadLink(data.script_file_signed_url, '下载脚本 (JSON)');
+                        resultScriptDownload.appendChild(scriptLink);
+                        console.log('✅ 脚本 Signed URL 已生成');
+                    } else {
+                        resultScriptDownload.textContent = '❌ 签名 URL 未生成（权限不足）';
+                        console.error('❌ 脚本签名 URL 为空，请检查 IAM 权限');
+                    }
+
+                    // 音频文件（仅使用 signed URL）
+                    if (data.audio_file_signed_url) {
+                        document.getElementById('audio-file-container').style.display = 'block';
+                        document.getElementById('result-audio-file').textContent = data.audio_file || '(已生成)';
+                        resultAudioDownload.innerHTML = '';
+                        const audioLink = makeDownloadLink(data.audio_file_signed_url, '下载音频 (MP3)');
+                        resultAudioDownload.appendChild(audioLink);
+                        console.log('✅ 音频 Signed URL 已生成');
+                    } else {
+                        document.getElementById('audio-file-container').style.display = 'none';
+                        resultAudioDownload.textContent = '-';
+                    }
+
+                    // Token统计
+                    const tokenInfo = data.token_usage ?
+                        `总计: ${data.token_usage.total_tokens || 'N/A'} (提示: ${data.token_usage.prompt_tokens || 'N/A'}, 完成: ${data.token_usage.completion_tokens || 'N/A'})` :
+                        '不可用';
+                    document.getElementById('result-tokens').textContent = tokenInfo;
+
+                    // 计算并显示 LLM 费用估算（按百万 tokens 定价）
+                    try {
+                        const pricePerMillion = parseFloat(tokenPriceInput.value) || 0;
+                        const totalTokens = data.token_usage && data.token_usage.total_tokens ? Number(data.token_usage.total_tokens) : 0;
+                        lastTotalTokens = totalTokens;
+                        const cost = (totalTokens > 0) ? ((totalTokens / 1000000) * pricePerMillion) : 0;
+                        resultTokenCost.textContent = totalTokens > 0 ? cost.toFixed(4) : '-';
+                    } catch (e) {
+                        resultTokenCost.textContent = '-';
+                    }
+
+                    // 计算并显示 Google TTS 费用估算
+                    try {
+                        const pricePerMillion = parseFloat(ttsPriceInput.value) || 0;
+                        let chars = 0;
+                        if (data.tts_character_count) {
+                            chars = Number(data.tts_character_count);
+                        } else if (data.script_preview && data.script_preview.estimated_duration_seconds) {
+                            // 估算字符数：每秒平均约 15 个字符（保守估计）
+                            chars = Math.round(Number(data.script_preview.estimated_duration_seconds) * 15);
+                        }
+                        lastTtsChars = chars;
+                        const ttsCost = chars > 0 ? (chars / 1000000) * pricePerMillion : 0;
+                        resultTtsCost.textContent = chars > 0 ? `$${ttsCost.toFixed(4)} (≈ ${chars} 字符)` : '-';
+                    } catch (e) {
+                        resultTtsCost.textContent = '-';
+                    }
+
+                    result.classList.add('show');
+                } else {
+                    throw new Error(data.message || '生成失败');
+                }
+                
+            } catch (err) {
+                error.textContent = `❌ 错误: ${err.message}`;
+                error.classList.add('show');
+            } finally {
+                loading.classList.remove('show');
+                submitBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,569 @@
+# ============================================================================
+# AI播客风格模板 - 与内容完全解耦
+# ============================================================================
+# 这个文件定义的是播客的结构、讲话人配置、语言等风格信息
+# 不含任何具体的内容、主题、数据等
+# 可以任意组合不同的风格模板 + 内容JSON
+
+styles:
+  # ========================================================================
+  # 英文模板：2位主持人对话
+  # ========================================================================
+  
+  english_2_hosts:
+    name: "English 2 Hosts Dialog"
+    description: "2位英文主持人的对话风格"
+    language: "en-US"
+    default_duration_minutes: 5
+    speakers:
+      - id: host_1
+        name: "Host 1"
+        role: "Host"
+        voice_name: "en-US-Neural2-I"
+        gender: "MALE"
+      - id: host_2
+        name: "Host 2"
+        role: "Co-host"
+        voice_name: "en-US-Neural2-F"
+        gender: "FEMALE"
+    
+    structure:
+      opening:
+        speakers: ["host_1", "host_2"]
+        pattern: "intro"  # 由内容决定具体文本
+        duration_seconds: 15
+      
+      main_discussion:
+        speakers: ["host_1", "host_2"]
+        pattern: "dialogue"  # 轮流讨论
+        segments: 3
+        duration_seconds_per_segment: 60
+      
+      closing:
+        speakers: ["host_1", "host_2"]
+        pattern: "outro"
+        duration_seconds: 10
+    
+    dynamics:
+      - host_1_opens
+      - host_2_responds
+      - host_1_deepens
+      - host_2_concludes
+    
+    style_characteristics:
+      tone: "professional"
+      pace: "moderate"
+      engagement: "high"
+      formality: "medium"
+  
+  # ========================================================================
+  # 英文模板：3位讲话人（1主持+2专家）
+  # ========================================================================
+  
+  english_3_experts:
+    name: "English 3 Expert Panel"
+    description: "1位主持人 + 2位专家的圆桌讨论"
+    language: "en-US"
+    default_duration_minutes: 8
+    speakers:
+      - id: moderator
+        name: "Moderator"
+        role: "Host"
+        voice_name: "en-US-Neural2-I"
+        gender: "MALE"
+      - id: expert_1
+        name: "Expert 1"
+        role: "Expert"
+        voice_name: "en-US-Neural2-J"
+        gender: "MALE"
+      - id: expert_2
+        name: "Expert 2"
+        role: "Expert"
+        voice_name: "en-US-Neural2-F"
+        gender: "FEMALE"
+    
+    structure:
+      opening:
+        speakers: ["moderator"]
+        duration_seconds: 10
+      
+      expert_1_view:
+        speakers: ["moderator", "expert_1"]
+        duration_seconds: 90
+      
+      expert_2_view:
+        speakers: ["moderator", "expert_2"]
+        duration_seconds: 90
+      
+      debate:
+        speakers: ["expert_1", "expert_2", "moderator"]
+        duration_seconds: 60
+      
+      closing:
+        speakers: ["moderator"]
+        duration_seconds: 10
+    
+    dynamics:
+      - moderator_introduces
+      - expert_explains
+      - moderator_asks_questions
+      - experts_debate
+      - moderator_concludes
+    
+    style_characteristics:
+      tone: "professional"
+      pace: "thoughtful"
+      engagement: "high"
+      formality: "high"
+  
+  # ========================================================================
+  # 英文模板：4位讲话人（2主持人 + 2女嘉宾）
+  # ========================================================================
+  
+  english_4_panel:
+    name: "English 4 Panel Discussion"
+    description: "1位男主持人 + 1位女主持人 + 2位女嘉宾的圆桌讨论"
+    language: "en-US"
+    default_duration_minutes: 10
+    speakers:
+      - id: host_male
+        name: "Host"
+        role: "Host"
+        voice_name: "en-US-Neural2-I"
+        gender: "MALE"
+      - id: host_female
+        name: "Co-host"
+        role: "Co-host"
+        voice_name: "en-US-Neural2-F"
+        gender: "FEMALE"
+      - id: guest_1
+        name: "Guest 1"
+        role: "Guest"
+        voice_name: "en-US-Neural2-G"
+        gender: "FEMALE"
+      - id: guest_2
+        name: "Guest 2"
+        role: "Guest"
+        voice_name: "en-US-Neural2-C"
+        gender: "FEMALE"
+    
+    structure:
+      opening:
+        speakers: ["host_male", "host_female"]
+        duration_seconds: 15
+      
+      segment_1:
+        speakers: ["host_male", "guest_1", "host_female"]
+        duration_seconds: 100
+      
+      segment_2:
+        speakers: ["host_female", "guest_2", "host_male"]
+        duration_seconds: 100
+      
+      segment_3:
+        speakers: ["guest_1", "guest_2", "host_male", "host_female"]
+        duration_seconds: 80
+      
+      closing:
+        speakers: ["host_male", "host_female"]
+        duration_seconds: 15
+    
+    dynamics:
+      - host_male_opens
+      - host_female_welcomes_guests
+      - guest_1_presents
+      - guest_2_responds
+      - hosts_moderate
+      - guests_discuss
+      - hosts_conclude
+    
+    style_characteristics:
+      tone: "professional"
+      pace: "lively"
+      engagement: "very_high"
+      formality: "medium"
+  
+  # ========================================================================
+  # 韩文模板：2位主持人
+  # ========================================================================
+  
+  korean_2_hosts:
+    name: "Korean 2 Hosts Dialog"
+    description: "2位韩文主持人的对话风格"
+    language: "ko-KR"
+    default_duration_minutes: 5
+    speakers:
+      - id: host_1
+        name: "Host 1"
+        role: "Host"
+        voice_name: "ko-KR-Neural2-C"
+        gender: "MALE"
+      - id: host_2
+        name: "Host 2"
+        role: "Co-host"
+        voice_name: "ko-KR-Neural2-B"
+        gender: "FEMALE"
+    
+    structure:
+      opening:
+        speakers: ["host_1", "host_2"]
+        duration_seconds: 15
+      
+      main_discussion:
+        speakers: ["host_1", "host_2"]
+        segments: 3
+        duration_seconds_per_segment: 60
+      
+      closing:
+        speakers: ["host_1", "host_2"]
+        duration_seconds: 10
+    
+    dynamics:
+      - host_1_opens
+      - host_2_responds
+      - host_1_deepens
+      - host_2_concludes
+    
+    style_characteristics:
+      tone: "casual"
+      pace: "moderate"
+      engagement: "high"
+      formality: "low"
+  
+  # ========================================================================
+  # 韩文模板：3位讲话人（专家讨论）
+  # ========================================================================
+  
+  korean_3_experts:
+    name: "Korean 3 Expert Panel"
+    description: "3位韩文专家的圆桌讨论"
+    language: "ko-KR"
+    default_duration_minutes: 8
+    speakers:
+      - id: host
+        name: "Host"
+        role: "Host"
+        voice_name: "ko-KR-Neural2-C"
+        gender: "MALE"
+      - id: expert_1
+        name: "Expert 1"
+        role: "Expert"
+        voice_name: "ko-KR-Neural2-A"
+        gender: "FEMALE"
+      - id: expert_2
+        name: "Expert 2"
+        role: "Expert"
+        voice_name: "ko-KR-Neural2-B"
+        gender: "FEMALE"
+    
+    structure:
+      opening:
+        speakers: ["host"]
+        duration_seconds: 12
+      
+      segment_1:
+        speakers: ["host", "expert_1", "expert_2"]
+        duration_seconds: 100
+      
+      segment_2:
+        speakers: ["expert_1", "expert_2", "host"]
+        duration_seconds: 100
+      
+      segment_3:
+        speakers: ["expert_2", "host", "expert_1"]
+        duration_seconds: 80
+      
+      closing:
+        speakers: ["host"]
+        duration_seconds: 12
+    
+    dynamics:
+      - host_introduces
+      - expert_1_perspective
+      - expert_2_perspective
+      - experts_discuss
+      - host_concludes
+    
+    style_characteristics:
+      tone: "professional"
+      pace: "moderate"
+      engagement: "high"
+      formality: "medium"
+  
+  # ========================================================================
+  # 中文模板：2位主持人
+  # ========================================================================
+  
+  chinese_2_hosts:
+    name: "Chinese 2 Hosts Dialog"
+    description: "2位中文主持人的对话风格"
+    language: "cmn-CN"
+    default_duration_minutes: 5
+    speakers:
+      - id: host_1
+        name: "主持人1"
+        role: "Host"
+        voice_name: "cmn-CN-Chirp3-HD-Alnilam"
+        gender: "MALE"
+      - id: host_2
+        name: "主持人2"
+        role: "Co-host"
+        voice_name: "cmn-CN-Chirp3-HD-Aoede"
+        gender: "FEMALE"
+    
+    structure:
+      opening:
+        speakers: ["host_1", "host_2"]
+        duration_seconds: 15
+      
+      main_discussion:
+        speakers: ["host_1", "host_2"]
+        segments: 3
+        duration_seconds_per_segment: 60
+      
+      closing:
+        speakers: ["host_1", "host_2"]
+        duration_seconds: 10
+    
+    dynamics:
+      - host_1_opens
+      - host_2_responds
+      - host_1_deepens
+      - host_2_concludes
+    
+    style_characteristics:
+      tone: "professional"
+      pace: "moderate"
+      engagement: "high"
+      formality: "medium"
+  
+  # ========================================================================
+  # 日文模板：2位主持人 + 2位嘉宾（4人讨论）
+  # ========================================================================
+  
+  japanese_4_panel:
+    name: "Japanese 4-Person Panel"
+    description: "1男1女主持人 + 1男1女嘉宾的日文讨论"
+    language: "ja-JP"
+    default_duration_minutes: 8
+    speakers:
+      - id: host_male
+        name: "Host (Male)"
+        role: "Host"
+        voice_name: "ja-JP-Neural2-C"
+        gender: "MALE"
+      - id: host_female
+        name: "Host (Female)"
+        role: "Co-host"
+        voice_name: "ja-JP-Neural2-B"
+        gender: "FEMALE"
+      - id: guest_male
+        name: "Guest (Male)"
+        role: "Guest"
+        voice_name: "ja-JP-Neural2-D"
+        gender: "MALE"
+      - id: guest_female
+        name: "Guest (Female)"
+        role: "Guest"
+        voice_name: "ja-JP-Chirp3-HD-Leda"
+        gender: "FEMALE"
+    
+    structure:
+      opening:
+        speakers: ["host_male", "host_female"]
+        duration_seconds: 15
+      
+      introduction:
+        speakers: ["host_male", "guest_male", "guest_female"]
+        duration_seconds: 20
+      
+      segment_1:
+        speakers: ["host_female", "guest_male", "host_male", "guest_female"]
+        duration_seconds: 120
+      
+      segment_2:
+        speakers: ["guest_female", "host_male", "guest_male", "host_female"]
+        duration_seconds: 120
+      
+      closing:
+        speakers: ["host_male", "host_female"]
+        duration_seconds: 15
+    
+    dynamics:
+      - host_male_opens
+      - host_female_introduces_guests
+      - guest_male_presents
+      - guest_female_responds
+      - host_male_asks_followup
+      - host_female_wraps_up
+    
+    style_characteristics:
+      tone: "professional"
+      pace: "moderate"
+      engagement: "high"
+      formality: "medium"
+  
+  # ========================================================================
+  # 混合语言模板：英文+韩文双语
+  # ========================================================================
+  
+  english_korean_bilingual:
+    name: "English-Korean Bilingual"
+    description: "English host + Korean expert 双语讨论"
+    language_primary: "en-US"
+    language_secondary: "ko-KR"
+    default_duration_minutes: 6
+    speakers:
+      - id: en_host
+        name: "English Host"
+        role: "Host"
+        voice_name: "en-US-Neural2-I"
+        language_code: "en-US"
+        gender: "MALE"
+      - id: ko_expert
+        name: "Korean Expert"
+        role: "Expert"
+        voice_name: "ko-KR-Neural2-C"
+        language_code: "ko-KR"
+        gender: "MALE"
+    
+    structure:
+      opening:
+        speakers: ["en_host"]
+        language: "en-US"
+        duration_seconds: 10
+      
+      english_segment:
+        speakers: ["en_host", "ko_expert"]
+        language: "en-US"
+        duration_seconds: 90
+      
+      korean_segment:
+        speakers: ["ko_expert", "en_host"]
+        language: "ko-KR"
+        duration_seconds: 90
+      
+      closing:
+        speakers: ["en_host"]
+        language: "en-US"
+        duration_seconds: 10
+    
+    dynamics:
+      - host_introduces_english
+      - expert_responds_korean
+      - host_asks_korean
+      - expert_explains_english
+    
+    style_characteristics:
+      tone: "professional"
+      pace: "moderate"
+      engagement: "high"
+      formality: "high"
+
+# ============================================================================
+# 样式特征定义（可复用的特性集）
+# ============================================================================
+
+style_profiles:
+  professional:
+    tone: "Professional and informative"
+    pace: "Measured and clear"
+    energy: "Moderate to high"
+    formality: "High"
+    appropriate_for:
+      - "News"
+      - "Market Analysis"
+      - "Business Discussion"
+  
+  casual:
+    tone: "Relaxed and friendly"
+    pace: "Natural and conversational"
+    energy: "High"
+    formality: "Low"
+    appropriate_for:
+      - "Entertainment"
+      - "Community News"
+      - "Casual Discussion"
+  
+  educational:
+    tone: "Instructive and clear"
+    pace: "Deliberate and explanatory"
+    energy: "Moderate"
+    formality: "Medium"
+    appropriate_for:
+      - "Learning Content"
+      - "Tutorials"
+      - "Deep Dives"
+  
+  entertaining:
+    tone: "Engaging and humorous"
+    pace: "Dynamic and varied"
+    energy: "High"
+    formality: "Low"
+    appropriate_for:
+      - "Comedy"
+      - "Entertainment News"
+      - "Pop Culture"
+
+# ============================================================================
+# 语言支持列表
+# ============================================================================
+
+supported_languages:
+  en-US:
+    name: "American English"
+    region: "United States"
+    voices:
+      - "en-US-Neural2-A"
+      - "en-US-Neural2-C"
+      - "en-US-Neural2-E"
+      - "en-US-Neural2-F"
+      - "en-US-Neural2-G"
+      - "en-US-Neural2-H"
+      - "en-US-Neural2-I"
+      - "en-US-Neural2-J"
+  
+  ko-KR:
+    name: "Korean"
+    region: "South Korea"
+    voices:
+      - "ko-KR-Neural2-A"
+      - "ko-KR-Neural2-B"
+      - "ko-KR-Neural2-C"
+  
+  ja-JP:
+    name: "Japanese"
+    region: "Japan"
+    voices:
+      - "ja-JP-Neural2-A"
+      - "ja-JP-Neural2-B"
+      - "ja-JP-Neural2-C"
+      - "ja-JP-Neural2-D"
+      - "ja-JP-Neural2-E"
+      - "ja-JP-Neural2-F"
+  
+  zh-CN:
+    name: "Simplified Chinese"
+    region: "China"
+    voices:
+      - "cmn-CN-Neural2-A"
+      - "cmn-CN-Neural2-B"
+      - "cmn-CN-Neural2-C"
+      - "cmn-CN-Neural2-D"
+
+# ============================================================================
+# 音频全局配置（对所有模板适用）
+# ============================================================================
+
+audio_config:
+  encoding: "MP3"
+  sample_rate_hz: 22050
+  bitrate: "192k"
+  speaking_rate: 1.0
+  pitch: 0.0
+
+pauses:
+  between_segments_ms: 200
+  after_question_ms: 300
+  before_answer_ms: 150
+  end_of_sentence_ms: 100

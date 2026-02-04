@@ -1,0 +1,4 @@
+# This file is intentionally left blank.
+# Its presence prevents gcloud from using the root .gitignore file,
+# ensuring that all files in this directory, including the Dockerfile,
+# are included in the source bundle for Cloud Build.
