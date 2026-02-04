@@ -38,6 +38,11 @@ if [[ -z "${PROJECT_ID}" || "${PROJECT_ID}" == "(unset)" ]]; then
   exit 1
 fi
 
+# Default runtime service account for Cloud Run (override by exporting SERVICE_ACCOUNT or SA_NAME)
+SA_NAME="${SA_NAME:-podcast-sa}"
+SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com}"
+echo "[Deploy] service_account=${SERVICE_ACCOUNT}"
+
 REQUIRED_FILES=(Dockerfile main.py requirements.txt)
 for file in "${REQUIRED_FILES[@]}"; do
   if [[ ! -f "${file}" ]]; then
