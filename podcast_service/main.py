@@ -20,6 +20,7 @@ API 端点：
 import os
 import json
 import logging
+import hashlib
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from pathlib import Path
@@ -86,9 +87,9 @@ class GeneratePodcastRequest(BaseModel):
     tts_engine: str = Field(default="google-cloud", description="TTS 引擎选择 (google-cloud)")
     cache_key_prefix: Optional[str] = Field(
         default=None,
-        description="可选：GCS 缓存 key 前缀（例如 stockflow/us/AAPL/2026-02-04/zh/chinese_2_hosts/dur5）。启用后会先查 manifest.json 命中则直接返回。",
+        description="可选：GCS 存储 key 前缀（例如 stockflow/us/AAPL/2026-02-04/zh/chinese_2_hosts/dur5）。已配置 GCS_BUCKET_NAME 时将写入 <prefix>/{script.json,audio.mp3,manifest.json}。若启用 use_cache，则会先查 manifest.json 命中则直接返回。",
     )
-    use_cache: bool = Field(default=True, description="当 cache_key_prefix 且已配置 GCS_BUCKET_NAME 时，是否启用缓存命中")
+    use_cache: bool = Field(default=True, description="当已配置 GCS_BUCKET_NAME 且存在 <prefix>/manifest.json 时，是否直接命中返回（不重新生成）。")
 
     class Config:
         example = {
@@ -139,10 +140,36 @@ def _sanitize_cache_prefix(prefix: str) -> str:
         raise ValueError("cache_key_prefix 不能为空")
     if ".." in v or v.startswith(".") or v.startswith("/"):
         raise ValueError("cache_key_prefix 非法")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._\\-/]{0,512}", v):
+    # Allow only a safe subset for GCS object paths: letters/digits plus "._-/".
+    # Note: place "-" at the end to avoid regex character range issues.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,512}", v):
         raise ValueError("cache_key_prefix 包含不支持字符")
     v = re.sub(r"/{2,}", "/", v)
     return v
+
+def _derive_cache_prefix_from_request(request: "GeneratePodcastRequest") -> str:
+    """
+    当调用方未提供 cache_key_prefix（或不合法）时，派生一个稳定且按日期分目录的前缀。
+    注意：若调用方希望“同一 ticker / 同一天 / 同语言”固定复用，应由调用方显式传入包含日期/标识的 cache_key_prefix。
+    """
+    basis = {
+        "topic": request.topic,
+        "source_content": request.source_content,
+        "style_name": request.style_name,
+        "tone": request.tone,
+        "dialogue_style": request.dialogue_style,
+        "duration_minutes": request.duration_minutes,
+        "language": request.language,
+        "additional_context": request.additional_context,
+        "custom_instructions": request.custom_instructions,
+        "generate_audio": request.generate_audio,
+        "tts_engine": request.tts_engine,
+    }
+    canonical = json.dumps(basis, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    date_key = datetime.utcnow().date().isoformat()
+    derived = f"stockflow/auto/v1/{date_key}/{request.language}/{request.style_name}/dur{request.duration_minutes}/{digest}"
+    return _sanitize_cache_prefix(derived)
 
 class ScriptResponse(BaseModel):
     """脚本响应"""
@@ -338,64 +365,77 @@ async def generate_podcast_v4(request: GeneratePodcastRequest):
     logger.info(f"   Tone: {request.tone}")
     logger.info(f"   Language: {request.language}")
     logger.info(f"   Duration: {request.duration_minutes} min")
+    logger.info(f"   use_cache: {request.use_cache}")
+    logger.info(f"   cache_key_prefix(raw): {request.cache_key_prefix!r}")
     logger.info("="*80)
     
     try:
-        # 0️⃣ GCS 缓存命中（按 cache_key_prefix）
+        # 0️⃣ GCS 统一存储前缀（按 cache_key_prefix / 派生前缀）+ 可选缓存命中（manifest.json）
         cache_prefix = None
-        if gcs_bucket_name and request.cache_key_prefix and request.use_cache:
-            try:
-                cache_prefix = _sanitize_cache_prefix(request.cache_key_prefix)
-                manifest_blob = f"{cache_prefix}/manifest.json"
-                if GCSUploader.blob_exists(gcs_bucket_name, manifest_blob):
-                    manifest = GCSUploader.download_json(gcs_bucket_name, manifest_blob)
-                    script_blob = str(manifest.get("script_blob") or "")
-                    audio_blob = str(manifest.get("audio_blob") or "")
+        if gcs_bucket_name:
+            if request.cache_key_prefix:
+                try:
+                    cache_prefix = _sanitize_cache_prefix(request.cache_key_prefix)
+                except Exception as e:
+                    logger.warning(f"⚠️ cache_key_prefix 非法，回退到派生前缀: {e}")
+                    cache_prefix = _derive_cache_prefix_from_request(request)
+            else:
+                cache_prefix = _derive_cache_prefix_from_request(request)
 
-                    script_uri = f"gs://{gcs_bucket_name}/{script_blob}" if script_blob else ""
-                    audio_uri = f"gs://{gcs_bucket_name}/{audio_blob}" if audio_blob else None
+            logger.info(f"   cache_key_prefix(effective): {cache_prefix}")
 
-                    script_signed_url = (
-                        GCSUploader.generate_signed_url(gcs_bucket_name, script_blob, expiration_hours=24)
-                        if script_blob
-                        else None
-                    )
-                    audio_signed_url = (
-                        GCSUploader.generate_signed_url(gcs_bucket_name, audio_blob, expiration_hours=24)
-                        if audio_blob
-                        else None
-                    )
+            if request.use_cache:
+                try:
+                    manifest_blob = f"{cache_prefix}/manifest.json"
+                    if GCSUploader.blob_exists(gcs_bucket_name, manifest_blob):
+                        manifest = GCSUploader.download_json(gcs_bucket_name, manifest_blob)
+                        script_blob = str(manifest.get("script_blob") or "")
+                        audio_blob = str(manifest.get("audio_blob") or "")
 
-                    elapsed = (datetime.now() - start_time).total_seconds()
-                    return GeneratePodcastResponse(
-                        status="success",
-                        podcast_name=str(manifest.get("podcast_name") or ""),
-                        podcast_id=str(manifest.get("podcast_id") or ""),
-                        topic=str(manifest.get("topic") or request.topic),
-                        style=str(manifest.get("style") or request.style_name),
-                        tone=str(manifest.get("tone") or request.tone),
-                        dialogue_style=str(manifest.get("dialogue_style") or request.dialogue_style),
-                        duration_minutes=int(manifest.get("duration_minutes") or request.duration_minutes),
-                        language=str(manifest.get("language") or request.language),
-                        num_speakers=int(manifest.get("num_speakers") or 0),
-                        script_file=script_uri,
-                        script_file_signed_url=script_signed_url,
-                        audio_file=audio_uri,
-                        audio_file_signed_url=audio_signed_url,
-                        audio_file_size_bytes=manifest.get("audio_file_size_bytes"),
-                        audio_duration_seconds=manifest.get("audio_duration_seconds"),
-                        script_preview=manifest.get("script_preview"),
-                        token_usage=manifest.get("token_usage"),
-                        tts_character_count=manifest.get("tts_character_count"),
-                        cost_breakdown=manifest.get("cost_breakdown"),
-                        message="✅ cache hit",
-                        timestamp=datetime.now(),
-                        generation_time_seconds=elapsed,
-                        cached=True,
-                        cache_key_prefix=cache_prefix,
-                    )
-            except Exception as cache_err:
-                logger.warning(f"⚠️ 缓存检查失败，继续实时生成: {cache_err}")
+                        script_uri = f"gs://{gcs_bucket_name}/{script_blob}" if script_blob else ""
+                        audio_uri = f"gs://{gcs_bucket_name}/{audio_blob}" if audio_blob else None
+
+                        script_signed_url = (
+                            GCSUploader.generate_signed_url(gcs_bucket_name, script_blob, expiration_hours=24)
+                            if script_blob
+                            else None
+                        )
+                        audio_signed_url = (
+                            GCSUploader.generate_signed_url(gcs_bucket_name, audio_blob, expiration_hours=24)
+                            if audio_blob
+                            else None
+                        )
+
+                        elapsed = (datetime.now() - start_time).total_seconds()
+                        return GeneratePodcastResponse(
+                            status="success",
+                            podcast_name=str(manifest.get("podcast_name") or ""),
+                            podcast_id=str(manifest.get("podcast_id") or ""),
+                            topic=str(manifest.get("topic") or request.topic),
+                            style=str(manifest.get("style") or request.style_name),
+                            tone=str(manifest.get("tone") or request.tone),
+                            dialogue_style=str(manifest.get("dialogue_style") or request.dialogue_style),
+                            duration_minutes=int(manifest.get("duration_minutes") or request.duration_minutes),
+                            language=str(manifest.get("language") or request.language),
+                            num_speakers=int(manifest.get("num_speakers") or 0),
+                            script_file=script_uri,
+                            script_file_signed_url=script_signed_url,
+                            audio_file=audio_uri,
+                            audio_file_signed_url=audio_signed_url,
+                            audio_file_size_bytes=manifest.get("audio_file_size_bytes"),
+                            audio_duration_seconds=manifest.get("audio_duration_seconds"),
+                            script_preview=manifest.get("script_preview"),
+                            token_usage=manifest.get("token_usage"),
+                            tts_character_count=manifest.get("tts_character_count"),
+                            cost_breakdown=manifest.get("cost_breakdown"),
+                            message="✅ cache hit",
+                            timestamp=datetime.now(),
+                            generation_time_seconds=elapsed,
+                            cached=True,
+                            cache_key_prefix=cache_prefix,
+                        )
+                except Exception as cache_err:
+                    logger.warning(f"⚠️ 缓存检查失败，继续实时生成: {cache_err}")
 
         # 1️⃣ 生成播客 ID 和名称
         podcast_id = f"podcast_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -541,20 +581,14 @@ CRITICAL REQUIREMENTS:
         script_uri = str(script_path)
         if gcs_bucket_name:
             try:
-                if cache_prefix:
-                    script_blob = f"{cache_prefix}/script.json"
-                    script_uri = GCSUploader.upload_file(
-                        local_path=script_path,
-                        bucket_name=gcs_bucket_name,
-                        destination_path=script_blob,
-                    )
-                else:
-                    script_blob = f"generated_scripts/{script_path.name}"
-                    script_uri = GCSUploader.upload_file(
-                        local_path=script_path,
-                        bucket_name=gcs_bucket_name,
-                        destination_path=script_blob,
-                    )
+                if not cache_prefix:
+                    raise RuntimeError("GCS 已启用但未生成 cache_key_prefix")
+                script_blob = f"{cache_prefix}/script.json"
+                script_uri = GCSUploader.upload_file(
+                    local_path=script_path,
+                    bucket_name=gcs_bucket_name,
+                    destination_path=script_blob,
+                )
                 logger.info(f"☁️ 脚本已上传至 GCS: {script_uri}")
             except Exception as upload_err:
                 logger.error(f"❌ 脚本上传 GCS 失败: {upload_err}", exc_info=True)
@@ -629,20 +663,14 @@ CRITICAL REQUIREMENTS:
                     audio_uri = audio_file
                     if gcs_bucket_name:
                         try:
-                            if cache_prefix:
-                                audio_blob = f"{cache_prefix}/audio.mp3"
-                                audio_uri = GCSUploader.upload_file(
-                                    local_path=Path(output_path),
-                                    bucket_name=gcs_bucket_name,
-                                    destination_path=audio_blob,
-                                )
-                            else:
-                                audio_blob = f"generated_podcasts/{Path(output_path).name}"
-                                audio_uri = GCSUploader.upload_file(
-                                    local_path=Path(output_path),
-                                    bucket_name=gcs_bucket_name,
-                                    destination_path=audio_blob,
-                                )
+                            if not cache_prefix:
+                                raise RuntimeError("GCS 已启用但未生成 cache_key_prefix")
+                            audio_blob = f"{cache_prefix}/audio.mp3"
+                            audio_uri = GCSUploader.upload_file(
+                                local_path=Path(output_path),
+                                bucket_name=gcs_bucket_name,
+                                destination_path=audio_blob,
+                            )
                             logger.info(f"☁️ 音频已上传至 GCS: {audio_uri}")
                         except Exception as upload_err:
                             logger.error(f"❌ 音频上传 GCS 失败: {upload_err}", exc_info=True)
@@ -753,7 +781,7 @@ CRITICAL REQUIREMENTS:
             cache_key_prefix=cache_prefix,
         )
 
-        # 11️⃣ 写入缓存 manifest（如果启用 cache_prefix）
+        # 11️⃣ 写入 manifest（统一目录索引）
         if gcs_bucket_name and cache_prefix:
             try:
                 script_blob = f"{cache_prefix}/script.json"
@@ -780,7 +808,7 @@ CRITICAL REQUIREMENTS:
                     "created_at": datetime.now().isoformat(),
                 }
                 GCSUploader.upload_json(gcs_bucket_name, f"{cache_prefix}/manifest.json", manifest)
-                logger.info(f"✅ 已写入缓存 manifest: gs://{gcs_bucket_name}/{cache_prefix}/manifest.json")
+                logger.info(f"✅ 已写入 manifest: gs://{gcs_bucket_name}/{cache_prefix}/manifest.json")
             except Exception as manifest_err:
                 logger.error(f"❌ 写入缓存 manifest 失败: {manifest_err}", exc_info=True)
         

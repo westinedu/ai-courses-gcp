@@ -142,6 +142,35 @@ class LLMScriptGenerator:
         self.client = OpenAI(api_key=self.api_key)
         
         logger.info(f"✅ LLM 脚本生成器初始化完成 (model={model})")
+
+    def _is_gpt5_model(self) -> bool:
+        return self.model.lower().startswith("gpt-5")
+
+    def _chat_completions_create_by_model(
+        self,
+        messages: List[Dict[str, str]],
+        max_output_tokens: int,
+        temperature: float = 0.7,
+        top_p: float = 0.95,
+    ):
+        """
+        按模型分开逻辑：
+        - gpt-5 系列：只使用 max_completion_tokens，不传 temperature/top_p
+        - 非 gpt-5：使用 max_tokens + temperature/top_p
+        """
+        if self._is_gpt5_model():
+            return self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_completion_tokens=max_output_tokens,
+            )
+        return self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_output_tokens,
+        )
     
     def generate_script(
         self,
@@ -206,17 +235,16 @@ class LLMScriptGenerator:
         
         logger.info(f"\n📝 调用 LLM 生成脚本...")
         
-        # 调用 OpenAI API
+        # 调用 OpenAI API（按模型分支）
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            response = self._chat_completions_create_by_model(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
+                max_output_tokens=8000,
                 temperature=0.7,
-                max_tokens=8000,
-                top_p=0.95
+                top_p=0.95,
             )
             
             # Extract response content
@@ -318,7 +346,7 @@ class LLMScriptGenerator:
         except Exception as e:
             logger.error(f"❌ LLM 调用失败: {e}")
             raise
-    
+
     def _build_system_prompt(
         self,
         tone: PodcastTone,
@@ -787,15 +815,14 @@ class LLMScriptGenerator:
 """
         
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            response = self._chat_completions_create_by_model(
                 messages=[
                     {"role": "system", "content": f"你是播客脚本编剧，擅长扩展和丰富内容。语言：{language}"},
-                    {"role": "user", "content": expansion_prompt}
+                    {"role": "user", "content": expansion_prompt},
                 ],
+                max_output_tokens=8000,
                 temperature=0.7,
-                max_tokens=8000,
-                top_p=0.95
+                top_p=0.95,
             )
             
             expansion_json = response.choices[0].message.content
