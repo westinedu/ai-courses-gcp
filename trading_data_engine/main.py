@@ -3,15 +3,19 @@ from __future__ import annotations
 import json
 import os
 import logging
+import time
 from datetime import datetime, date, timedelta
+from threading import Event, Lock
 from typing import Dict, List, Optional, Any
 
 import yfinance as yf
 import pandas as pd
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query, Body # Added Body for batch_refresh
+from fastapi.responses import JSONResponse
 import pytz
 from google.cloud import storage
+from google.api_core.exceptions import PreconditionFailed
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -53,6 +57,15 @@ GENERATE_ANALYSIS_IN_BATCH = str(os.environ.get("GENERATE_ANALYSIS_IN_BATCH", "1
 app = FastAPI(title="Trading Data Service",
               description="提供股票行情、历史 K 线及特征工程数据的服务。",
               version="1.0.0")
+
+# --- In-process de-dup / throttling (best-effort; per Cloud Run instance) ---
+_REFRESH_LOCK = Lock()
+_REFRESH_INFLIGHT: Dict[str, Event] = {}
+_REFRESH_LAST_OK_AT: Dict[str, float] = {}
+_REFRESH_LAST_FAIL_AT: Dict[str, float] = {}
+
+_ANALYSIS_LOCK = Lock()
+_ANALYSIS_INFLIGHT: Dict[str, Event] = {}
 
 # --- Global Constants ---
 # Timezone for scheduling and timestamps (e.g., US market close time)
@@ -137,6 +150,57 @@ def is_trading_day(check_date: date) -> bool:
     对于实际应用，需要考虑节假日和市场休市。
     """
     return check_date.weekday() < 5 # Monday=0, Sunday=6
+
+
+def _latest_expected_trading_day(today_in_tz: date) -> date:
+    d = today_in_tz
+    while not is_trading_day(d):
+        d = d - timedelta(days=1)
+    return d
+
+
+def _maybe_refresh_daily_once(ticker: str, min_interval_seconds: int = 600, fail_backoff_seconds: int = 60) -> None:
+    """
+    Best-effort: ensure only one request per instance refreshes a ticker within a short time window.
+    This is NOT a distributed lock; use it to reduce duplicate yfinance calls under burst traffic.
+    """
+    t = ticker.upper()
+    now = time.time()
+
+    with _REFRESH_LOCK:
+        last_ok = _REFRESH_LAST_OK_AT.get(t, 0.0)
+        if now - last_ok < float(min_interval_seconds):
+            return
+        last_fail = _REFRESH_LAST_FAIL_AT.get(t, 0.0)
+        if now - last_fail < float(fail_backoff_seconds):
+            return
+
+        inflight = _REFRESH_INFLIGHT.get(t)
+        if inflight is not None:
+            wait_ev = inflight
+        else:
+            wait_ev = None
+            ev = Event()
+            _REFRESH_INFLIGHT[t] = ev
+
+    if wait_ev is not None:
+        # Wait a bit so the next request can reuse fresh storage.
+        wait_ev.wait(timeout=12.0)
+        return
+
+    ok = False
+    try:
+        daily_incremental_update_job(t)
+        ok = True
+    finally:
+        with _REFRESH_LOCK:
+            if ok:
+                _REFRESH_LAST_OK_AT[t] = time.time()
+            else:
+                _REFRESH_LAST_FAIL_AT[t] = time.time()
+            done = _REFRESH_INFLIGHT.pop(t, None)
+            if done is not None:
+                done.set()
 
 def _fetch_quote(ticker: str) -> Dict:
     """
@@ -761,6 +825,7 @@ def _save_historical_data_to_storage(ticker: str, df: pd.DataFrame) -> str:
             bucket = storage_client.bucket(GCS_BUCKET_NAME)
             blob_name = _get_gcs_blob_name(ticker)
             blob = bucket.blob(blob_name)
+            blob.cache_control = "public, max-age=600, stale-while-revalidate=86400"
             
             blob.upload_from_string(json_content, content_type="application/json")
             logger.info("成功保存 %s 历史数据到 GCS: gs://%s/%s", ticker, GCS_BUCKET_NAME, blob_name)
@@ -970,6 +1035,7 @@ def _save_analysis_to_storage(ticker: str, analysis_date: date, analysis_data: D
             bucket = storage_client.bucket(GCS_BUCKET_NAME)
             blob_name = _get_gcs_analysis_blob_name(ticker, analysis_date)
             blob = bucket.blob(blob_name)
+            blob.cache_control = "public, max-age=600, stale-while-revalidate=86400"
             blob.upload_from_string(json_content_str, content_type="application/json")
             logger.info("成功保存 %s analysis 到 GCS: gs://%s/%s", ticker, GCS_BUCKET_NAME, blob_name)
             return f"gs://{GCS_BUCKET_NAME}/{blob_name}"
@@ -984,6 +1050,78 @@ def _save_analysis_to_storage(ticker: str, analysis_date: date, analysis_data: D
         return filepath
     except Exception as exc:
         logger.error("保存 %s analysis 到本地 fallback 文件 %s 失败: %s", ticker, filepath, exc)
+        return ""
+
+
+def _load_analysis_from_storage(ticker: str, analysis_date: date) -> Optional[Dict[str, Any]]:
+    """Load analysis JSON from storage if present; return None when missing/unreadable."""
+    t = ticker.upper()
+    if GCS_BUCKET_NAME:
+        try:
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(GCS_BUCKET_NAME)
+            blob_name = _get_gcs_analysis_blob_name(t, analysis_date)
+            blob = bucket.blob(blob_name)
+            if not blob.exists():
+                return None
+            raw = blob.download_as_text(encoding="utf-8")
+            obj = json.loads(raw)
+            return obj if isinstance(obj, dict) else None
+        except Exception as exc:
+            logger.error("从 GCS 加载 %s analysis 失败: %s", t, exc)
+            return None
+
+    filepath = _get_local_fallback_analysis_filepath(t, analysis_date)
+    if not os.path.exists(filepath):
+        return None
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        return obj if isinstance(obj, dict) else None
+    except Exception as exc:
+        logger.error("从本地 fallback 文件 %s 加载 %s analysis 失败: %s", filepath, t, exc)
+        return None
+
+
+def _analysis_request_is_baseline(body: Dict[str, Any]) -> bool:
+    """Only baseline requests are safe to cache at a fixed path (ticker/date)."""
+    if not isinstance(body, dict):
+        return True
+    weights = body.get("weights")
+    user_factor = body.get("userFactor")
+    # If user passes custom weights or user factor, the output becomes user-specific -> do not cache globally.
+    if isinstance(weights, dict) and len(weights):
+        return False
+    if isinstance(user_factor, dict) and len(user_factor):
+        return False
+    return True
+
+
+def _try_save_analysis_if_absent(ticker: str, analysis_date: date, analysis_data: Dict[str, Any]) -> str:
+    """
+    Best-effort idempotent save: only create the object when it doesn't exist.
+    If it already exists, return its gs:// path without overwriting.
+    """
+    t = ticker.upper()
+    blob_name = _get_gcs_analysis_blob_name(t, analysis_date)
+    if not GCS_BUCKET_NAME:
+        return _save_analysis_to_storage(t, analysis_date, analysis_data)
+
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(GCS_BUCKET_NAME)
+        blob = bucket.blob(blob_name)
+        blob.cache_control = "public, max-age=600, stale-while-revalidate=86400"
+        payload = json.dumps(analysis_data, indent=2, ensure_ascii=False)
+        try:
+            blob.upload_from_string(payload, content_type="application/json", if_generation_match=0)
+            logger.info("成功创建 %s analysis 到 GCS: gs://%s/%s", t, GCS_BUCKET_NAME, blob_name)
+        except PreconditionFailed:
+            # Someone else already created it.
+            pass
+        return f"gs://{GCS_BUCKET_NAME}/{blob_name}"
+    except Exception as exc:
+        logger.error("幂等保存 %s analysis 到 GCS 失败: %s", t, exc)
         return ""
 
 
@@ -1414,11 +1552,45 @@ async def get_historical_data_endpoint(ticker: str, period: str = Query('1y', pa
     """
     ticker = ticker.upper()
     request_logger.info(f"API Request: /trading_data/{ticker}/historical - Period: {period}")
-    
-    df = _fetch_historical_df(ticker, period=period) # Returns with DatetimeIndex (naive)
-    
+
+    period_days = 365
+    if period == "3mo":
+        period_days = 92
+    elif period == "1y":
+        period_days = 365
+    elif period == "3y":
+        period_days = 3 * 365
+    elif period == "5y":
+        period_days = 5 * 365
+
+    # Prefer persisted data (GCS) when available; refresh only when stale (rate-limited).
+    df = _load_historical_data_from_storage(ticker)
+    try:
+        if not df.empty and isinstance(df.index, pd.DatetimeIndex):
+            df = df.sort_index()
+            last_date = df.index.max().date()
+            expected = _latest_expected_trading_day(datetime.now(TIMEZONE).date())
+            if last_date < expected:
+                _maybe_refresh_daily_once(ticker, min_interval_seconds=600)
+                df = _load_historical_data_from_storage(ticker).sort_index()
+    except Exception:
+        pass
+
     if df.empty:
-        raise HTTPException(status_code=404, detail=f"周期 {period} 的 {ticker} 历史数据未找到。")
+        # Fallback: fetch via yfinance, and persist so subsequent requests are fast + consistent.
+        df = _fetch_historical_df(ticker, period=period)  # Returns with DatetimeIndex (naive)
+        if df.empty:
+            raise HTTPException(status_code=404, detail=f"周期 {period} 的 {ticker} 历史数据未找到。")
+        if isinstance(df.index, pd.DatetimeIndex):
+            df.index = df.index.normalize()
+        _save_historical_data_to_storage(ticker, df)
+
+    # Slice to requested period (approx) to reduce payload.
+    if isinstance(df.index, pd.DatetimeIndex) and len(df.index):
+        cutoff = datetime.now(TIMEZONE).date() - timedelta(days=int(period_days))
+        df = df[df.index.date >= cutoff].copy()
+        if df.empty:
+            raise HTTPException(status_code=404, detail=f"周期 {period} 的 {ticker} 历史数据未找到。")
 
     # 转换为 dict 列表以便 API 响应
     # 确保 'Date' 列转换为字符串，并将 NaN 替换以便 JSON 序列化
@@ -1748,7 +1920,12 @@ async def health() -> Dict[str, str]:
 
     **用途:** 用于 Cloud Run 或其他容器编排平台进行服务健康检查。
     """
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "gcs_enabled": "1" if bool(GCS_BUCKET_NAME) else "0",
+        "gcs_bucket": str(GCS_BUCKET_NAME or ""),
+        "generate_analysis_in_batch": "1" if GENERATE_ANALYSIS_IN_BATCH else "0",
+    }
 
 
 # --- Compatibility endpoints for vercel-nextjs (optional, but helps swap data source later) ---
@@ -1768,7 +1945,18 @@ async def market_candles(
         raise HTTPException(status_code=400, detail="Only interval=1d is supported for now.")
 
     df = _load_historical_data_from_storage(s)
-    source = "gcs"
+    source = "gcs" if GCS_BUCKET_NAME else "local-fallback"
+
+    # If we have stored data but it's stale, refresh it (rate-limited per instance).
+    try:
+        if not df.empty and isinstance(df.index, pd.DatetimeIndex):
+            last_date = df.index.max().date()
+            expected = _latest_expected_trading_day(datetime.now(TIMEZONE).date())
+            if last_date < expected:
+                _maybe_refresh_daily_once(s, min_interval_seconds=600)
+                df = _load_historical_data_from_storage(s)
+    except Exception:
+        pass
 
     # Fallback: if no stored data, fetch via yfinance and persist.
     if df.empty:
@@ -1811,7 +1999,7 @@ async def trading_us_analysis(body: Dict[str, Any] = Body(default_factory=dict))
 
     # Ensure stored candles are up-to-date enough (best-effort).
     try:
-        daily_incremental_update_job(symbol)
+        _maybe_refresh_daily_once(symbol, min_interval_seconds=600)
     except Exception:
         # ignore for MVP (still try to compute from stored data / fresh fetch)
         pass
@@ -1825,15 +2013,81 @@ async def trading_us_analysis(body: Dict[str, Any] = Body(default_factory=dict))
         _save_historical_data_to_storage(symbol, df)
 
     try:
-        return _compute_analysis_from_df(
+        df = df.sort_index()
+        analysis_date = df.index.max().date() if isinstance(df.index, pd.DatetimeIndex) and len(df.index) else datetime.now(TIMEZONE).date()
+
+        is_baseline = _analysis_request_is_baseline(body)
+        inflight_key = f"{symbol}:{analysis_date.isoformat()}:{years}"
+
+        if is_baseline:
+            cached = _load_analysis_from_storage(symbol, analysis_date)
+            if isinstance(cached, dict):
+                # Keep response meta fresh without mutating the cached object too much.
+                meta = cached.get("meta") if isinstance(cached.get("meta"), dict) else {}
+                meta = {**meta, "servedFrom": "gcs-cache", "servedAt": datetime.now(TIMEZONE).isoformat(), "years": years}
+                cached["meta"] = meta
+                return JSONResponse(
+                    content=cached,
+                    headers={"cache-control": "public, max-age=60, stale-while-revalidate=3600"},
+                )
+
+            with _ANALYSIS_LOCK:
+                ev = _ANALYSIS_INFLIGHT.get(inflight_key)
+                if ev is None:
+                    ev = Event()
+                    _ANALYSIS_INFLIGHT[inflight_key] = ev
+                    leader = True
+                else:
+                    leader = False
+
+            if not leader:
+                # Wait for the leader to finish computing & persisting, then try load again.
+                ev.wait(timeout=12.0)
+                cached2 = _load_analysis_from_storage(symbol, analysis_date)
+                if isinstance(cached2, dict):
+                    meta = cached2.get("meta") if isinstance(cached2.get("meta"), dict) else {}
+                    meta = {**meta, "servedFrom": "gcs-cache", "servedAt": datetime.now(TIMEZONE).isoformat(), "years": years}
+                    cached2["meta"] = meta
+                    return JSONResponse(
+                        content=cached2,
+                        headers={"cache-control": "public, max-age=60, stale-while-revalidate=3600"},
+                    )
+
+        analysis_payload = _compute_analysis_from_df(
             symbol=symbol,
             df=df,
             years=years,
             weights_override=body.get("weights") if isinstance(body.get("weights"), dict) else None,
             user_factor=body.get("userFactor") if isinstance(body.get("userFactor"), dict) else None,
         )
+        if is_baseline:
+            path = _try_save_analysis_if_absent(symbol, analysis_date, analysis_payload)
+            if path:
+                try:
+                    index_list = _load_analysis_daily_index_from_storage(analysis_date)
+                    index_list = [item for item in index_list if item.get("ticker") != symbol]
+                    index_list.append({"ticker": symbol, "path": path})
+                    _save_analysis_daily_index_to_storage(analysis_date, index_list)
+                except Exception:
+                    pass
+
+        return JSONResponse(
+            content=analysis_payload,
+            headers={"cache-control": "public, max-age=60, stale-while-revalidate=3600"},
+        )
     except Exception as exc:
+        if _analysis_request_is_baseline(body):
+            with _ANALYSIS_LOCK:
+                ev = _ANALYSIS_INFLIGHT.pop(inflight_key, None) if "inflight_key" in locals() else None
+            if ev is not None:
+                ev.set()
         raise HTTPException(status_code=502, detail=str(exc))
+    finally:
+        if _analysis_request_is_baseline(body):
+            with _ANALYSIS_LOCK:
+                ev = _ANALYSIS_INFLIGHT.pop(inflight_key, None) if "inflight_key" in locals() else None
+            if ev is not None:
+                ev.set()
 
 
 if __name__ == "__main__": # pragma: no cover
