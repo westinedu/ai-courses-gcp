@@ -142,7 +142,8 @@ def _sanitize_cache_prefix(prefix: str) -> str:
         raise ValueError("cache_key_prefix 非法")
     # Allow only a safe subset for GCS object paths: letters/digits plus "._-/".
     # Note: place "-" at the end to avoid regex character range issues.
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,512}", v):
+    # Underscore is allowed in GCS object names and is commonly used in style names.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,512}", v.replace("_", "-")):
         raise ValueError("cache_key_prefix 包含不支持字符")
     v = re.sub(r"/{2,}", "/", v)
     return v
@@ -286,7 +287,11 @@ async def health_check():
         "components": {
             "llm_generator": script_generator is not None,
             "podcast_pipeline": podcast_pipeline is not None
-        }
+        },
+        "gcs": {
+            "enabled": bool(gcs_bucket_name),
+            "bucket": gcs_bucket_name,
+        },
     }
 
 @app.get("/v4/tones")
