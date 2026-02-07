@@ -90,6 +90,10 @@ class GeneratePodcastRequest(BaseModel):
         description="可选：GCS 存储 key 前缀（例如 stockflow/us/AAPL/2026-02-04/zh/chinese_2_hosts/dur5）。已配置 GCS_BUCKET_NAME 时将写入 <prefix>/{script.json,audio.mp3,manifest.json}。若启用 use_cache，则会先查 manifest.json 命中则直接返回。",
     )
     use_cache: bool = Field(default=True, description="当已配置 GCS_BUCKET_NAME 且存在 <prefix>/manifest.json 时，是否直接命中返回（不重新生成）。")
+    manifest_params: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="可选：写入 manifest.json 的参数（用于把调用方传入的 days/horizon/bt/dur/variant 等写清楚）。不会影响缓存命中逻辑。",
+    )
 
     class Config:
         example = {
@@ -811,6 +815,7 @@ CRITICAL REQUIREMENTS:
                     "audio_duration_seconds": response.audio_duration_seconds,
                     "audio_file_size_bytes": response.audio_file_size_bytes,
                     "created_at": datetime.now().isoformat(),
+                    "stockflow_params": request.manifest_params or None,
                 }
                 GCSUploader.upload_json(gcs_bucket_name, f"{cache_prefix}/manifest.json", manifest)
                 logger.info(f"✅ 已写入 manifest: gs://{gcs_bucket_name}/{cache_prefix}/manifest.json")
