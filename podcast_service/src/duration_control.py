@@ -20,15 +20,13 @@ SPEECH_RATE = {
     "en-GB": 140,   # 英文英国
 }
 
-# Google Cloud TTS speaking_rate 映射
-# speaking_rate: 0 = 正常, 0.5 = 1.5x, 1.0 = 2x
-SPEED_TO_TTS_RATE = {
-    1.0: 0.0,   # 正常语速
-    1.2: 0.2,   # 1.2x
-    1.5: 0.4,   # 1.5x
-    1.8: 0.6,   # 1.8x
-    2.0: 0.8,   # 2x
-}
+#
+# Google Cloud TTS `speaking_rate` 语义（重要）：
+# - speaking_rate 是倍率参数：1.0 = 正常语速；> 1.0 更快；< 1.0 更慢
+# - 有效范围通常在 0.25 到 4.0（不同 SDK/版本可能略有差异）
+#
+# 之前的实现把 speaking_rate 当成了 0.0=正常、0.6=更快 的“偏移量”，
+# 会导致语速整体偏慢甚至接近最慢值，从而出现“语速很慢”的体验问题。
 
 
 def count_words(text: str, language: str) -> int:
@@ -101,8 +99,8 @@ def calculate_optimal_tts_params(
     
     Returns:
         {
-            "speaking_rate": float,  # Google Cloud TTS 参数 (-1.0 to 1.0)
-            "speed_ratio": float,    # 实际语速倍数
+            "speaking_rate": float,  # Google Cloud TTS 参数 (multiplier, 1.0 = normal)
+            "speed_ratio": float,    # 期望语速倍数（仅用于估算/日志）
             "estimated_duration": float,  # 预估时长（秒）
             "word_count": int,       # 字数
             "max_words": int,        # 建议最大字数
@@ -115,28 +113,18 @@ def calculate_optimal_tts_params(
     # 预估基础时长（正常语速）
     base_duration = (word_count / rate) * 60
     
-    # 计算需要的语速倍数
+    # 计算“如果要在目标时长内说完”理论上需要的速度倍率（仅用于日志/估算）。
+    # 注意：产品策略可能选择“固定 speaking_rate=1.0（原语速）”，此时需要通过压缩脚本而不是调速来满足时长。
     if base_duration > target_duration and target_duration > 0:
         speed_ratio = base_duration / target_duration
-        
-        # 限制最大语速为 1.8x（再快就不自然了）
-        speed_ratio = min(speed_ratio, 1.8)
-        
-        # 映射到 Google Cloud TTS speaking_rate
-        # 使用线性插值
-        if speed_ratio <= 1.0:
-            speaking_rate = 0.0
-        elif speed_ratio >= 1.8:
-            speaking_rate = 0.6
-        else:
-            # 线性映射: 1.0->0.0, 1.8->0.6
-            speaking_rate = (speed_ratio - 1.0) / 0.8 * 0.6
     else:
         speed_ratio = 1.0
-        speaking_rate = 0.0
+
+    # Product requirement: keep Google TTS at its natural/default speed.
+    speaking_rate = 1.0
     
     # 重新计算预估时长
-    estimated_duration = base_duration / speed_ratio if speed_ratio > 0 else base_duration
+    estimated_duration = base_duration / speaking_rate if speaking_rate > 0 else base_duration
     
     return {
         "speaking_rate": round(speaking_rate, 2),

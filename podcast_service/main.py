@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 from enum import Enum
 from google.cloud import texttospeech
 import re
+import math
 
 # 自动加载环境变量（必须在导入其他模块之前）
 from src.env_config import load_env, get_config
@@ -85,6 +86,10 @@ class GeneratePodcastRequest(BaseModel):
     tone: str = Field(default="professional", description="语调风格")
     dialogue_style: str = Field(default="conversation", description="对话风格")
     duration_minutes: int = Field(default=5, description="目标时长（分钟）")
+    duration_seconds: Optional[int] = Field(
+        default=None,
+        description="目标时长（秒）。用于精确控制（例如 Shorts 45 秒），优先级高于 duration_minutes。",
+    )
     max_words: Optional[int] = Field(default=None, description="最大字数限制（可选，用于精确控制时长）")
     language: str = Field(default="en-US", description="语言代码")
     podcast_name: str = Field(default=None, description="播客名称（自动生成如果为空）")
@@ -530,8 +535,13 @@ async def generate_podcast_v4(request: GeneratePodcastRequest):
         logger.info(f"   Speakers: {len(speaker_names) if speaker_names else num_speakers} people")
         logger.info(f"   Language: {template_language}")
         
-        # ⏱️ 计算时长控制参数
-        target_duration_seconds = request.duration_minutes * 60
+        # ⏱️ 计算时长控制参数（支持秒级）
+        target_duration_seconds = (
+            int(request.duration_seconds)
+            if request.duration_seconds is not None
+            else int(request.duration_minutes) * 60
+        )
+        target_duration_seconds = max(10, min(900, target_duration_seconds))
         max_words = request.max_words or calculate_max_words(target_duration_seconds, template_language)
         logger.info(f"   Target Duration: {target_duration_seconds}s")
         logger.info(f"   Max Words: {max_words}")
@@ -587,7 +597,7 @@ CRITICAL REQUIREMENTS:
         script: PodcastScript = script_generator.generate_script(
             topic=request.topic,
             num_speakers=num_speakers,
-            duration_minutes=request.duration_minutes,
+            duration_minutes=max(1, int(math.ceil(target_duration_seconds / 60))),
             language=llm_language,  # ✅ 使用映射后的LLM语言代码
             tone=tone,
             dialogue_style=dialogue_style,
@@ -602,15 +612,109 @@ CRITICAL REQUIREMENTS:
         logger.info(f"   段落数: {len(script.segments)}")
         logger.info(f"   预计时长: {script.estimated_duration_seconds:.1f}秒")
         
-        # ⏱️ 验证并压缩脚本字数
-        script_text = script.to_text() if hasattr(script, 'to_text') else str(script)
-        word_count = count_words(script_text, template_language)
-        logger.info(f"   实际字数: {word_count}")
-        
-        if word_count > max_words:
-            logger.warning(f"⚠️  脚本字数 {word_count} 超过限制 {max_words}，尝试压缩...")
-            # 这里可以添加 LLM 压缩逻辑，暂时依赖 prompt 约束
-            # 后续可以通过异步调用 LLM 进行压缩
+        # ⏱️ 强制控制脚本长度：保持 Google TTS 原语速（speaking_rate=1.0），因此必须通过压缩脚本满足时长。
+        def _risk_line(lang_code: str) -> str:
+            lc = str(lang_code or "").lower()
+            if lc.startswith("cmn"):
+                return "非投资建议，高风险。"
+            if lc.startswith("ja"):
+                return "投資助言ではありません。リスクがあります。"
+            if lc.startswith("ko"):
+                return "투자 조언이 아닙니다. 고위험입니다."
+            return "Not financial advice. High risk."
+
+        def _words_for_segment_text(seg_text: str) -> int:
+            return count_words(str(seg_text or ""), template_language)
+
+        def _truncate_text_to_words(text: str, allowed_words: int) -> str:
+            if allowed_words <= 0:
+                return ""
+            t = str(text or "").strip()
+            if not t:
+                return ""
+            if str(template_language).lower().startswith(("cmn", "ja", "ko")):
+                # CJK: approximate by characters (count_words already strips punctuation/spaces).
+                # Keep it simple: truncate by visible length.
+                return t[:allowed_words].strip()
+            parts = t.split()
+            return " ".join(parts[:allowed_words]).strip()
+
+        # Count by spoken text (exclude speaker names/IDs, exclude JSON overhead).
+        original_spoken_words = sum(_words_for_segment_text(s.text) for s in script.segments)
+        logger.info(f"   Spoken word/char count: {original_spoken_words} (limit={max_words})")
+
+        if original_spoken_words > max_words:
+            logger.warning(f"⚠️  脚本长度超限，进行确定性压缩以适配 {target_duration_seconds}s（speaking_rate=1.0）...")
+
+            risk = _risk_line(template_language)
+            risk_words = _words_for_segment_text(risk)
+            budget = max(1, max_words - risk_words)
+
+            new_segments = []
+            used = 0
+            for seg in script.segments:
+                seg_text = str(seg.text or "").strip()
+                if not seg_text:
+                    continue
+                seg_words = _words_for_segment_text(seg_text)
+                if used + seg_words <= budget:
+                    new_segments.append(seg)
+                    used += seg_words
+                    continue
+
+                remaining = budget - used
+                truncated = _truncate_text_to_words(seg_text, remaining)
+                if truncated:
+                    # Rebuild SSML for truncated segment (safe minimal SSML).
+                    escaped = (
+                        truncated.replace("&", "&amp;")
+                        .replace("<", "&lt;")
+                        .replace(">", "&gt;")
+                    )
+                    seg.text = truncated
+                    seg.ssml_text = f"<speak>{escaped}</speak>"
+                    new_segments.append(seg)
+                    used += _words_for_segment_text(truncated)
+                break
+
+            # Append risk line as a final segment (short, consistent).
+            if new_segments:
+                last = new_segments[-1]
+                escaped_risk = (
+                    risk.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                )
+                try:
+                    from src.llm_script_generator import ScriptSegment
+                    new_segments.append(
+                        ScriptSegment(
+                            speaker_id=last.speaker_id,
+                            speaker_name=last.speaker_name,
+                            text=risk,
+                            ssml_text=f"<speak>{escaped_risk}</speak>",
+                            duration_seconds=0.0,
+                            segment_type="closing",
+                            notes="risk_disclaimer",
+                        )
+                    )
+                except Exception:
+                    # Fallback: if dataclass import fails for any reason, skip adding.
+                    pass
+
+            script.segments = new_segments
+            final_spoken_words = sum(_words_for_segment_text(s.text) for s in script.segments)
+            # Recompute rough duration estimate at natural speech rate.
+            rate = 220 if str(template_language).lower().startswith("cmn") else 140
+            try:
+                # Match duration_control's SPEECH_RATE lookup style but keep it simple here.
+                from src.duration_control import SPEECH_RATE as _SR
+                rate = int(_SR.get(template_language, rate))
+            except Exception:
+                pass
+            script.estimated_duration_seconds = (final_spoken_words / max(1, rate)) * 60
+
+            logger.info(f"   Compressed spoken count: {original_spoken_words} -> {final_spoken_words} (limit={max_words})")
         
         # 5️⃣ 保存脚本
         logger.info(f"\n4️⃣ 保存脚本...")
@@ -653,16 +757,8 @@ CRITICAL REQUIREMENTS:
                 
                 logger.info(f"  初始化音频合成器...")
                 
-                # ⏱️ 计算最优语速
-                script_text_for_tts = json.dumps(script_data)
-                tts_params = calculate_optimal_tts_params(
-                    script_text_for_tts, 
-                    target_duration_seconds, 
-                    template_language
-                )
-                logger.info(f"  TTS 参数: {tts_params}")
-                
-                synthesizer = AudioSynthesizer(speaking_rate=tts_params["speaking_rate"])
+                # Product requirement: keep Google TTS at natural/default speed.
+                synthesizer = AudioSynthesizer(speaking_rate=1.0)
                 
                 logger.info(f"  脚本已加载，开始合成音频...")
                 
@@ -749,6 +845,8 @@ CRITICAL REQUIREMENTS:
                 logger.error(f"❌ 音频生成出错: {e}")
                 import traceback
                 traceback.print_exc()
+                # When audio is explicitly requested, fail the request instead of returning success with no audio.
+                raise HTTPException(status_code=500, detail=f"audio_generation_failed: {e}")
         
         # 7️⃣ 生成 signed URLs（如果文件在 GCS 中）
         script_signed_url = None
