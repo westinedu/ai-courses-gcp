@@ -55,22 +55,27 @@ class AudioSynthesizer:
     这是昨天验证过的成功方法
     """
     
-    def __init__(self, project_id: str = None):
-        """初始化合成器"""
+    def __init__(self, project_id: str = None, speaking_rate: float = 1.0):
+        """初始化合成器
+        
+        Args:
+            project_id: Google Cloud 项目 ID
+            speaking_rate: 语速 (0.5 = 慢速, 1.0 = 正常, 1.5 = 快速, 最大 2.0)
+        """
         self.project_id = project_id or os.getenv('GOOGLE_CLOUD_PROJECT', 'able-engine-466308-q2')
         self.client = texttospeech.TextToSpeechClient()
         self.output_dir = Path('data/generated_podcasts')
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        # 音频配置（与昨天相同）
+        # 音频配置（支持动态语速）
         self.audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3,
             sample_rate_hertz=22050,
-            speaking_rate=1.0,
+            speaking_rate=speaking_rate,
             pitch=0.0,
         )
         
-        logger.info(f"✅ 音频合成器初始化完成 (项目: {self.project_id})")
+        logger.info(f"✅ 音频合成器初始化完成 (项目: {self.project_id}, 语速: {speaking_rate}x)")
     
     def synthesize_segment(self, ssml_text: str, voice_config: SpeakerVoiceConfig) -> tuple:
         """
