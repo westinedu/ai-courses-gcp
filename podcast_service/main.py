@@ -54,14 +54,6 @@ from src.llm_script_generator import (
 )
 from src.podcast_pipeline import get_llm_language_code  # ✅ 导入语言映射函数
 from src.podcast_pipeline import PodcastPipeline
-from src.duration_control import (
-    count_words,
-    calculate_max_words,
-    calculate_optimal_tts_params,
-    truncate_audio,
-    add_duration_constraints_to_prompt,
-    enforce_duration_limit,
-)
 
 # ============================================================================
 # 日志配置
@@ -85,7 +77,6 @@ class GeneratePodcastRequest(BaseModel):
     tone: str = Field(default="professional", description="语调风格")
     dialogue_style: str = Field(default="conversation", description="对话风格")
     duration_minutes: int = Field(default=5, description="目标时长（分钟）")
-    max_words: Optional[int] = Field(default=None, description="最大字数限制（可选，用于精确控制时长）")
     language: str = Field(default="en-US", description="语言代码")
     podcast_name: str = Field(default=None, description="播客名称（自动生成如果为空）")
     speaker_names: Optional[List[str]] = Field(default=None, description="讲话人名字")
@@ -530,12 +521,6 @@ async def generate_podcast_v4(request: GeneratePodcastRequest):
         logger.info(f"   Speakers: {len(speaker_names) if speaker_names else num_speakers} people")
         logger.info(f"   Language: {template_language}")
         
-        # ⏱️ 计算时长控制参数
-        target_duration_seconds = request.duration_minutes * 60
-        max_words = request.max_words or calculate_max_words(target_duration_seconds, template_language)
-        logger.info(f"   Target Duration: {target_duration_seconds}s")
-        logger.info(f"   Max Words: {max_words}")
-        
         # 构建讲话人配置信息，直接从 template 获取，无需硬编码
         if speaker_roles and speaker_genders and template_speaker_ids:
             # 直接传递 template 中的讲话人完整配置给 LLM
@@ -545,7 +530,7 @@ async def generate_podcast_v4(request: GeneratePodcastRequest):
             speaker_config_text = "\n".join(speaker_config)
             
             # 让 LLM 根据完整的讲话人配置灵活生成对话
-            base_custom_inst = f"""Generate a podcast dialogue with the following speaker configuration:
+            custom_inst = f"""Generate a podcast dialogue with the following speaker configuration:
 
 Speaker Roles:
 {speaker_config_text}
@@ -559,16 +544,9 @@ CRITICAL REQUIREMENTS:
 6. Each role should be distinguished by their expertise and perspective (e.g., Host moderates, Co-host adds commentary, Guests provide perspectives)
 7. Do NOT assign all speech to one speaker
 8. Dialogue should flow naturally and realistically"""
-            # 添加时长约束
-            custom_inst = add_duration_constraints_to_prompt(
-                base_custom_inst, max_words, target_duration_seconds, template_language
-            )
         else:
-            base_custom_inst = request.custom_instructions or "Generate natural dialogue with distinct personalities for each speaker."
-            # 添加时长约束
-            custom_inst = add_duration_constraints_to_prompt(
-                base_custom_inst, max_words, target_duration_seconds, template_language
-            )
+            custom_inst = request.custom_instructions or "Generate natural dialogue with distinct personalities for each speaker."
+            custom_inst = request.custom_instructions or "Generate natural dialogue with distinct personalities for each speaker."
         
         # 4️⃣ 使用 LLM 生成脚本（考虑角色、性别和语言）
         # 如果提供了 source_content，将其添加到 additional_context 中
@@ -602,24 +580,12 @@ CRITICAL REQUIREMENTS:
         logger.info(f"   段落数: {len(script.segments)}")
         logger.info(f"   预计时长: {script.estimated_duration_seconds:.1f}秒")
         
-        # ⏱️ 验证并压缩脚本字数
-        script_text = script.to_text() if hasattr(script, 'to_text') else str(script)
-        word_count = count_words(script_text, template_language)
-        logger.info(f"   实际字数: {word_count}")
-        
-        if word_count > max_words:
-            logger.warning(f"⚠️  脚本字数 {word_count} 超过限制 {max_words}，尝试压缩...")
-            # 这里可以添加 LLM 压缩逻辑，暂时依赖 prompt 约束
-            # 后续可以通过异步调用 LLM 进行压缩
-        
         # 5️⃣ 保存脚本
         logger.info(f"\n4️⃣ 保存脚本...")
         
         script_path = generated_scripts_dir / f"{podcast_id}_script.json"
         script_generator.save_script(script, str(script_path))
         logger.info(f"✅ 脚本已保存: {script_path}")
-        with open(script_path, 'r', encoding='utf-8') as f:
-            script_data = json.load(f)
 
         script_uri = str(script_path)
         if gcs_bucket_name:
@@ -652,17 +618,11 @@ CRITICAL REQUIREMENTS:
                 from src.audio_synthesizer import AudioSynthesizer, SpeakerVoiceConfig
                 
                 logger.info(f"  初始化音频合成器...")
+                synthesizer = AudioSynthesizer()
                 
-                # ⏱️ 计算最优语速
-                script_text_for_tts = json.dumps(script_data)
-                tts_params = calculate_optimal_tts_params(
-                    script_text_for_tts, 
-                    target_duration_seconds, 
-                    template_language
-                )
-                logger.info(f"  TTS 参数: {tts_params}")
-                
-                synthesizer = AudioSynthesizer(speaking_rate=tts_params["speaking_rate"])
+                # 从脚本文件读取数据
+                with open(script_path, 'r', encoding='utf-8') as f:
+                    script_data = json.load(f)
                 
                 logger.info(f"  脚本已加载，开始合成音频...")
                 
@@ -708,23 +668,6 @@ CRITICAL REQUIREMENTS:
                     logger.info(f"   文件大小: {file_size_mb:.2f} MB")
                     logger.info(f"   TTS字符数: {tts_character_count}")
                     logger.info(f"   音频时长: {audio_duration_seconds:.1f}秒")
-                    
-                    # ⏱️ 音频截断（如果超过目标时长）
-                    if audio_duration_seconds and audio_duration_seconds > target_duration_seconds:
-                        logger.warning(f"⚠️  音频时长 {audio_duration_seconds:.1f}s 超过目标 {target_duration_seconds}s，进行截断...")
-                        truncated_path = str(Path(output_path).parent / f"{Path(output_path).stem}_truncated.mp3")
-                        audio_file = truncate_audio(
-                            input_path=output_path,
-                            output_path=truncated_path,
-                            target_duration=target_duration_seconds,
-                            fade_out=1.5
-                        )
-                        # 更新时长和大小
-                        if audio_file != output_path:
-                            audio_duration_seconds = target_duration_seconds
-                            audio_file_size_bytes = Path(audio_file).stat().st_size
-                            output_path = audio_file
-                            logger.info(f"✅ 音频已截断至 {target_duration_seconds}s")
 
                     audio_uri = audio_file
                     if gcs_bucket_name:
