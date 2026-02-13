@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import logging
+import re
 import time
 from datetime import datetime, date, timedelta
 from threading import Event, Lock
@@ -41,12 +42,14 @@ if not GCS_BUCKET_NAME:
     LOCAL_FALLBACK_DAILY_INDEX_DIR = os.path.join(LOCAL_FALLBACK_AI_CONTEXT_DIR, "daily_index") # For daily_index.json
     LOCAL_FALLBACK_ANALYSIS_DIR = os.path.join(os.path.dirname(__file__), "analysis_local_fallback")
     LOCAL_FALLBACK_ANALYSIS_INDEX_DIR = os.path.join(LOCAL_FALLBACK_ANALYSIS_DIR, "daily_index")
+    LOCAL_FALLBACK_EARNINGS_DIR = os.path.join(os.path.dirname(__file__), "earnings_local_fallback")
 
     os.makedirs(LOCAL_FALLBACK_DATA_DIR, exist_ok=True)
     os.makedirs(LOCAL_FALLBACK_AI_CONTEXT_DIR, exist_ok=True)
     os.makedirs(LOCAL_FALLBACK_DAILY_INDEX_DIR, exist_ok=True)
     os.makedirs(LOCAL_FALLBACK_ANALYSIS_DIR, exist_ok=True)
     os.makedirs(LOCAL_FALLBACK_ANALYSIS_INDEX_DIR, exist_ok=True)
+    os.makedirs(LOCAL_FALLBACK_EARNINGS_DIR, exist_ok=True)
 
 # GCS path for the dynamic ticker list file
 GCS_TICKER_LIST_BLOB_NAME = os.environ.get("GCS_TICKER_LIST_BLOB", "config/default_tickers.json")
@@ -66,6 +69,14 @@ _REFRESH_LAST_FAIL_AT: Dict[str, float] = {}
 
 _ANALYSIS_LOCK = Lock()
 _ANALYSIS_INFLIGHT: Dict[str, Event] = {}
+
+_EARNINGS_LOCK = Lock()
+_EARNINGS_INFLIGHT: Dict[str, Event] = {}
+_EARNINGS_L1_CACHE: Dict[str, Dict[str, Any]] = {}
+_EARNINGS_L1_HIT_TTL_SECONDS = int(os.environ.get("EARNINGS_L1_HIT_TTL_SECONDS", "600"))  # 10 min
+_EARNINGS_L1_MISS_TTL_SECONDS = int(os.environ.get("EARNINGS_L1_MISS_TTL_SECONDS", "120"))  # 2 min
+_EARNINGS_L2_HIT_TTL_SECONDS = int(os.environ.get("EARNINGS_L2_HIT_TTL_SECONDS", "21600"))  # 6 h
+_EARNINGS_L2_MISS_TTL_SECONDS = int(os.environ.get("EARNINGS_L2_MISS_TTL_SECONDS", "3600"))  # 1 h
 
 # --- Global Constants ---
 # Timezone for scheduling and timestamps (e.g., US market close time)
@@ -389,6 +400,319 @@ def _df_to_market_candles(df: pd.DataFrame, limit: int) -> List[Dict[str, Any]]:
         )
     # filter incomplete rows
     return [c for c in out if c.get("c") is not None]
+
+
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=TIMEZONE)
+        return dt
+    except Exception:
+        return None
+
+
+def _is_earnings_payload_fresh(payload: Dict[str, Any]) -> bool:
+    fetched_at = _parse_iso_datetime(payload.get("fetchedAt"))
+    if fetched_at is None:
+        return False
+
+    has_date = bool(str(payload.get("nextEarningsDate") or "").strip())
+    ttl_seconds = _EARNINGS_L2_HIT_TTL_SECONDS if has_date else _EARNINGS_L2_MISS_TTL_SECONDS
+    age_seconds = (datetime.now(pytz.UTC) - fetched_at.astimezone(pytz.UTC)).total_seconds()
+    return age_seconds <= float(ttl_seconds)
+
+
+def _get_gcs_earnings_blob_name(ticker: str) -> str:
+    return f"earnings/next/{ticker.upper()}.json"
+
+
+def _get_local_fallback_earnings_filepath(ticker: str) -> str:
+    os.makedirs(LOCAL_FALLBACK_EARNINGS_DIR, exist_ok=True)
+    return os.path.join(LOCAL_FALLBACK_EARNINGS_DIR, f"{ticker.upper()}.json")
+
+
+def _load_next_earnings_from_storage(ticker: str) -> Optional[Dict[str, Any]]:
+    t = ticker.upper()
+    if GCS_BUCKET_NAME:
+        try:
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(GCS_BUCKET_NAME)
+            blob_name = _get_gcs_earnings_blob_name(t)
+            blob = bucket.blob(blob_name)
+            if not blob.exists():
+                return None
+            raw = blob.download_as_text(encoding="utf-8")
+            payload = json.loads(raw)
+            return payload if isinstance(payload, dict) else None
+        except Exception as exc:
+            logger.error("从 GCS 加载 %s 的 next earnings 失败: %s", t, exc)
+            return None
+
+    filepath = _get_local_fallback_earnings_filepath(t)
+    if not os.path.exists(filepath):
+        return None
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return payload if isinstance(payload, dict) else None
+    except Exception as exc:
+        logger.error("从本地 fallback 文件 %s 加载 %s 的 next earnings 失败: %s", filepath, t, exc)
+        return None
+
+
+def _save_next_earnings_to_storage(ticker: str, payload: Dict[str, Any]) -> str:
+    t = ticker.upper()
+    content = json.dumps(payload, indent=2, ensure_ascii=False)
+
+    if GCS_BUCKET_NAME:
+        try:
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(GCS_BUCKET_NAME)
+            blob_name = _get_gcs_earnings_blob_name(t)
+            blob = bucket.blob(blob_name)
+            blob.cache_control = "public, max-age=300, stale-while-revalidate=86400"
+            blob.upload_from_string(content, content_type="application/json")
+            logger.info("成功保存 %s 的 next earnings 到 GCS: gs://%s/%s", t, GCS_BUCKET_NAME, blob_name)
+            return f"gs://{GCS_BUCKET_NAME}/{blob_name}"
+        except Exception as exc:
+            logger.error("保存 %s 的 next earnings 到 GCS 失败: %s", t, exc)
+            return ""
+
+    filepath = _get_local_fallback_earnings_filepath(t)
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        logger.warning("GCS_BUCKET_NAME 未设置。已保存 %s 的 next earnings 到本地 fallback: %s", t, filepath)
+        return filepath
+    except Exception as exc:
+        logger.error("保存 %s 的 next earnings 到本地 fallback 文件 %s 失败: %s", t, filepath, exc)
+        return ""
+
+
+def _candidate_to_date(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return None
+        return value.date()
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            n = float(value)
+            if not np.isfinite(n):
+                return None
+            ts = n / 1000.0 if n > 10_000_000_000 else n
+            return datetime.utcfromtimestamp(ts).date()
+        except Exception:
+            return None
+
+    s = str(value).strip()
+    if not s:
+        return None
+    m = re.match(r"^\d{4}-\d{2}-\d{2}", s)
+    if m:
+        try:
+            return date.fromisoformat(m.group(0))
+        except Exception:
+            pass
+    try:
+        parsed = pd.to_datetime(s, errors="coerce")
+        if pd.isna(parsed):
+            return None
+        return parsed.date()
+    except Exception:
+        return None
+
+
+def _extract_next_earnings_date_from_yfinance(stock: yf.Ticker, ticker: str) -> tuple[Optional[date], str]:
+    today_tz = datetime.now(TIMEZONE).date()
+    candidates: List[date] = []
+    source_tags: List[str] = []
+
+    # 1) yfinance>=0.2 preferred method
+    try:
+        earnings_df = stock.get_earnings_dates(limit=12)
+        if isinstance(earnings_df, pd.DataFrame) and not earnings_df.empty:
+            for idx in earnings_df.index:
+                d = _candidate_to_date(idx)
+                if d is not None:
+                    candidates.append(d)
+            if len(earnings_df.index):
+                source_tags.append("get_earnings_dates")
+    except Exception as exc:
+        logger.warning("从 yfinance.get_earnings_dates 获取 %s 失败: %s", ticker, exc)
+
+    # 2) calendarEvents fallback
+    try:
+        cal = stock.calendar
+        cal_candidates: List[date] = []
+        if isinstance(cal, pd.DataFrame) and not cal.empty:
+            for idx in cal.index:
+                if "earning" not in str(idx).lower():
+                    continue
+                row = cal.loc[idx]
+                if isinstance(row, pd.Series):
+                    for val in row.tolist():
+                        d = _candidate_to_date(val)
+                        if d is not None:
+                            cal_candidates.append(d)
+                else:
+                    d = _candidate_to_date(row)
+                    if d is not None:
+                        cal_candidates.append(d)
+        elif isinstance(cal, dict):
+            for key, val in cal.items():
+                if "earning" not in str(key).lower():
+                    continue
+                if isinstance(val, (list, tuple, set, pd.Series, np.ndarray)):
+                    for item in val:
+                        d = _candidate_to_date(item)
+                        if d is not None:
+                            cal_candidates.append(d)
+                else:
+                    d = _candidate_to_date(val)
+                    if d is not None:
+                        cal_candidates.append(d)
+        if cal_candidates:
+            candidates.extend(cal_candidates)
+            source_tags.append("calendar")
+    except Exception as exc:
+        logger.warning("从 yfinance.calendar 获取 %s 失败: %s", ticker, exc)
+
+    # 3) info timestamp fallback
+    try:
+        info = stock.info or {}
+        info_candidates: List[date] = []
+        for key in ("earningsTimestamp", "earningsTimestampStart", "earningsTimestampEnd"):
+            d = _candidate_to_date(info.get(key))
+            if d is not None:
+                info_candidates.append(d)
+        if info_candidates:
+            candidates.extend(info_candidates)
+            source_tags.append("info")
+    except Exception as exc:
+        logger.warning("从 yfinance.info 获取 %s 失败: %s", ticker, exc)
+
+    future_dates = sorted({d for d in candidates if d >= today_tz})
+    source = "+".join(source_tags) if source_tags else "yfinance"
+    return (future_dates[0] if future_dates else None, source)
+
+
+def _fetch_next_earnings_from_yfinance(ticker: str) -> Dict[str, Any]:
+    t = ticker.upper()
+    stock = yf.Ticker(t)
+    next_dt, source = _extract_next_earnings_date_from_yfinance(stock, t)
+    return {
+        "symbol": t,
+        "provider": "yfinance",
+        "source": source,
+        "fetchedAt": datetime.now(TIMEZONE).isoformat(),
+        "nextEarningsDate": next_dt.strftime("%Y-%m-%d") if next_dt else None,
+    }
+
+
+def _get_next_earnings_from_l1(ticker: str) -> Optional[Dict[str, Any]]:
+    t = ticker.upper()
+    now = time.time()
+    with _EARNINGS_LOCK:
+        entry = _EARNINGS_L1_CACHE.get(t)
+        if not entry:
+            return None
+        if now >= float(entry.get("expiresAt", 0)):
+            _EARNINGS_L1_CACHE.pop(t, None)
+            return None
+        payload = entry.get("payload")
+        return dict(payload) if isinstance(payload, dict) else None
+
+
+def _set_next_earnings_to_l1(ticker: str, payload: Dict[str, Any]) -> None:
+    t = ticker.upper()
+    has_date = bool(str(payload.get("nextEarningsDate") or "").strip())
+    ttl = _EARNINGS_L1_HIT_TTL_SECONDS if has_date else _EARNINGS_L1_MISS_TTL_SECONDS
+    with _EARNINGS_LOCK:
+        _EARNINGS_L1_CACHE[t] = {
+            "payload": dict(payload),
+            "expiresAt": time.time() + float(ttl),
+        }
+
+
+def _with_earnings_meta(payload: Dict[str, Any], cache_layer: str, stale: bool = False, stale_reason: str = "") -> Dict[str, Any]:
+    out = dict(payload)
+    out["cacheLayer"] = cache_layer
+    if stale:
+        out["stale"] = True
+        if stale_reason:
+            out["staleReason"] = stale_reason
+    return out
+
+
+def _get_or_refresh_next_earnings(ticker: str, force_refresh: bool = False) -> Dict[str, Any]:
+    t = ticker.upper()
+
+    if not force_refresh:
+        l1 = _get_next_earnings_from_l1(t)
+        if isinstance(l1, dict):
+            return _with_earnings_meta(l1, cache_layer="l1")
+
+    with _EARNINGS_LOCK:
+        wait_ev = _EARNINGS_INFLIGHT.get(t)
+        if wait_ev is None:
+            wait_ev = Event()
+            _EARNINGS_INFLIGHT[t] = wait_ev
+            leader = True
+        else:
+            leader = False
+
+    if not leader:
+        wait_ev.wait(timeout=12.0)
+        l1_after_wait = _get_next_earnings_from_l1(t)
+        if isinstance(l1_after_wait, dict):
+            return _with_earnings_meta(l1_after_wait, cache_layer="l1-after-wait")
+        l2_after_wait = _load_next_earnings_from_storage(t)
+        if isinstance(l2_after_wait, dict):
+            _set_next_earnings_to_l1(t, l2_after_wait)
+            return _with_earnings_meta(l2_after_wait, cache_layer="l2-after-wait")
+        raise RuntimeError(f"等待中的 next earnings 请求未产生可用结果: {t}")
+
+    try:
+        if not force_refresh:
+            l2 = _load_next_earnings_from_storage(t)
+            if isinstance(l2, dict) and _is_earnings_payload_fresh(l2):
+                _set_next_earnings_to_l1(t, l2)
+                return _with_earnings_meta(l2, cache_layer="l2")
+
+        payload = _fetch_next_earnings_from_yfinance(t)
+        _save_next_earnings_to_storage(t, payload)
+        _set_next_earnings_to_l1(t, payload)
+        return _with_earnings_meta(payload, cache_layer="upstream")
+    except Exception as exc:
+        stale_payload = _load_next_earnings_from_storage(t)
+        if isinstance(stale_payload, dict):
+            _set_next_earnings_to_l1(t, stale_payload)
+            return _with_earnings_meta(
+                stale_payload,
+                cache_layer="l2-stale",
+                stale=True,
+                stale_reason=str(exc),
+            )
+        raise
+    finally:
+        with _EARNINGS_LOCK:
+            done = _EARNINGS_INFLIGHT.pop(t, None)
+        if done is not None:
+            done.set()
 
 
 def _default_factor_weights() -> Dict[str, float]:
@@ -1903,6 +2227,36 @@ async def get_ai_context_path_by_date(ticker: str, date: str):
     else:
         local_path = _get_local_fallback_ai_context_filepath(ticker, context_date)
         return {"ticker": ticker, "date": date, "path": local_path}
+
+
+@app.get("/api/market/earnings/next", summary="(compat) 获取下一个财报日")
+async def market_next_earnings(
+    symbol: str = Query(..., description="股票代码，例如 AAPL"),
+    force_refresh: int = Query(0, ge=0, le=1, description="是否强制绕过缓存刷新上游"),
+):
+    """
+    优先返回缓存（L1 进程内 -> L2 GCS/本地），缓存 miss 或过期时再请求 yfinance。
+    返回格式与 vercel 侧 endpoint 对齐：nextEarningsDate / fetchedAt / source。
+    """
+    s = _normalize_symbol(symbol)
+    request_logger.info(f"API Request: /api/market/earnings/next - symbol={s}, force_refresh={force_refresh}")
+    try:
+        payload = _get_or_refresh_next_earnings(s, force_refresh=bool(force_refresh))
+        return JSONResponse(
+            content=payload,
+            headers={"cache-control": "public, max-age=120, stale-while-revalidate=21600"},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to load next earnings for {s}: {str(exc)}")
+
+
+@app.get("/trading_data/{ticker}/next_earnings", summary="获取下一个财报日（trading_data 路径）")
+async def trading_data_next_earnings(
+    ticker: str,
+    force_refresh: int = Query(0, ge=0, le=1, description="是否强制绕过缓存刷新上游"),
+):
+    t = _normalize_symbol(ticker)
+    return await market_next_earnings(symbol=t, force_refresh=force_refresh)
 
 
 # --- Health check endpoint ---
