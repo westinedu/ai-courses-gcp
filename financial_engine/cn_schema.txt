@@ -1,0 +1,254 @@
+"""
+financial-engine / main.py
+=================================
+
+本服务是 **VCard 项目 - 财报数据引擎** 的实现，职责聚焦：
+
+1) **拉取财报**：基于 yfinance 获取单只股票的财务三大表（年/季）、earnings（年/季）和公司信息。
+2) **无条件增量合并**：不做“最新日期”的判断；每次批量/刷新都直接取最新全量，再与历史 JSON 按 `index` 去重合并，避免漏更/错更。
+3) **语义摘要**：对关键财务指标与估值做简要中文解读，供下游 AI 使用。
+4) **AI Context 落盘**：按 **America/Los_Angeles** 时区为每只股票每天生成一份 `ai_context/{TICKER}/{YYYY-MM-DD}.txt`。
+5) **当日清单**：同步维护 `ai_context/daily_index/{YYYY-MM-DD}.json`，供 card-job 批量取数。
+6) **接口解耦**：同时提供“批量清单接口”和“按 ticker 取 path 接口”，QA/卡片不需要自己拼路径。
+
+注意：
+- 该服务每次运行都“全量拉取 + 去重合并”，没有任何“最新日期”的网络判断，
+  目的是 **避免Yahoo端数据回填/修订导致的遗漏**（您已明确要求）。
+- yfinance 的 DataFrame 列为财务科目，索引为日期；保存前会统一转为 JSON 友好的 records 列表，`index` 为字符串。
+- 合并规则：同一个 `index`（日期）以“新数据覆盖旧数据”；最终按日期倒序（新→旧）。
+
+部署/运行见 README.md。
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Union
+
+import pandas as pd
+import pytz
+import yfinance as yf
+import numpy as np  # 确保导入 numpy
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
+from google.cloud import storage
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+# Prepare data directory for saved JSON files (for local development/testing)
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# GCS 桶名称与时区
+# 强烈建议通过环境变量来设置桶名称，以便灵活配置。
+GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "financial-data-engine-bucket")
+ENGINE_TZ = os.environ.get("ENGINE_TZ", "America/Los_Angeles")
+tz = pytz.timezone(ENGINE_TZ)
+
+# 【修改点 3：_interpret_financials 函数】
+# 改动原因：移除了估值指标的解读，使该函数专注于季度数据的变化趋势。
+def _interpret_financials_CN(data: Dict[str, Any]) -> List[str]:
+    """
+    对财报和估值数据进行语义解读。
+    期望 data['financials'] 和 data['earnings'] 是 orient='list' 格式。
+    此函数仅生成基于季度数据比较的解读，不再包含估值指标的解读。
+    """
+    interpretations: List[str] = []
+    financials_data = data.get("financials", {})
+    earnings_data = data.get("earnings", {})
+    # valuations = data.get("valuations", {}) # 不再使用估值数据进行解读
+
+    metrics_to_interpret = {
+        "Total Revenue": "总营收",
+        "Net Income": "净利润",
+        "Operating Income": "营业利润",
+        "Cost Of Revenue": "营业成本",
+        "Gross Profit": "毛利润",
+    }
+
+    for metric_name, chinese_name in metrics_to_interpret.items():
+        # financials_data 是 {'MetricName': [val_date1, val_date2, ...], ...}
+        values = financials_data.get(metric_name)
+        if values and len(values) >= 2:
+            latest = values[0]
+            previous = values[1]
+            if latest is not None and previous is not None:
+                diff = latest - previous
+                pct = (diff / previous * 100) if previous != 0 else None
+                trend = "增长" if diff > 0 else ("下降" if diff < 0 else "持平")
+                if pct is not None:
+                    interpretations.append(
+                        f"季度{chinese_name} 从 {previous:,.2f} 到 {latest:,.2f}，{trend} {abs(diff):,.2f} ({pct:+.1f}%)。"
+                    )
+
+    # EPS 和营收解读 (earnings 包含 'index' 字段)
+    revs = earnings_data.get("Revenue")
+    epss = earnings_data.get("Earnings")
+
+    if revs and len(revs) >= 2:
+        rev_latest = revs[0]
+        rev_previous = revs[1]
+        if rev_latest is not None and rev_previous is not None:
+            rev_diff = rev_latest - rev_previous
+            rev_pct = (rev_diff / rev_previous * 100) if rev_previous != 0 else None
+            trend = "增长" if rev_diff > 0 else ("下降" if rev_diff < 0 else "持平")
+            if rev_pct is not None:
+                interpretations.append(
+                    f"季度营收由 {rev_previous:,.2f} 增至 {rev_latest:,.2f}，{trend} {abs(rev_diff):,.2f} ({rev_pct:+.1f}%)。"
+                )
+
+    if epss and len(epss) >= 2:
+        eps_latest = epss[0]
+        eps_previous = epss[1]
+        if eps_latest is not None and eps_previous is not None:
+            eps_diff = eps_latest - eps_previous
+            eps_pct = (eps_diff / eps_previous * 100) if eps_previous != 0 else None
+            trend = "增长" if eps_diff > 0 else ("下降" if eps_diff < 0 else "持平")
+            if eps_pct is not None:
+                interpretations.append(
+                    f"季度每股收益 (EPS) 从 {eps_previous:,.2f} 到 {eps_latest:,.2f}，{trend} {abs(eps_diff):,.2f} ({eps_pct:+.1f}%)。"
+                )
+
+    if not interpretations:
+        interpretations.append("缺少足够的财务数据用于解读。")
+    return interpretations
+
+
+# --- 生成：面向 LLM 的简要上下文文本（当天） ---
+# 【修改点 4：_generate_ai_context_text 函数】
+# 改动原因：显著增强 AI Context 内容，包括更详细的原始数据、报告日期和类型，并避免信息重复。
+def _generate_ai_context_text_CN(comprehensive_data: FinancialData, interpretations: List[str]) -> str:
+    """
+    根据完整的财务数据和解读生成用于 AI 的简洁上下文文本。
+    该文本包含公司基本信息、估值、近期原始财务数据概览和关键财务指标的解读。
+    """
+    lines: List[str] = []
+
+    ticker = comprehensive_data.ticker
+    info = comprehensive_data.info
+    valuations = comprehensive_data.valuations
+
+    # 1. 公司基本信息和日期
+    lines.append(f"股票代码: {ticker.upper()}")
+    lines.append(f"日期: {_today_str()}") # AI Context生成日期
+    company_name = info.get("shortName") or info.get("longName")
+    if company_name:
+        lines.append(f"公司名称: {company_name}")
+    industry = info.get("industry")
+    if industry:
+        lines.append(f"所属行业: {industry}")
+    
+    lines.append("\n--- 估值指标 ---")
+    pe = valuations.get("trailing_pe")
+    if pe is not None:
+        lines.append(f"市盈率 (PE): {_format_value(pe, decimals=2)}")
+    ps = valuations.get("price_to_sales")
+    if ps is not None:
+        lines.append(f"市销率 (P/S): {_format_value(ps, decimals=2)}")
+    pb = valuations.get("price_to_book")
+    if pb is not None:
+        lines.append(f"市净率 (P/B): {_format_value(pb, decimals=2)}")
+
+    # 2. 近期财务数据概览 (原始数据)
+    lines.append("\n--- 近期财务数据概览 ---")
+
+    # 定义要提取的关键指标，可以根据实际需求调整
+    income_statement_keys = {
+        "Total Revenue": "总营收",
+        "Gross Profit": "毛利润",
+        "Operating Income": "营业利润",
+        "Net Income": "净利润",
+        "EBITDA": "EBITDA",
+        "Diluted EPS": "摊薄每股收益"
+    }
+    balance_sheet_keys = {
+        "Total Assets": "总资产",
+        "Current Assets": "流动资产",
+        "Total Liabilities Net Minority Interest": "总负债",
+        "Total Debt": "总债务",
+        "Common Stock Equity": "普通股股东权益",
+        "Cash And Cash Equivalents": "现金及现金等价物"
+    }
+    cash_flow_keys = {
+        "Operating Cash Flow": "经营现金流",
+        "Investing Cash Flow": "投资现金流",
+        "Financing Cash Flow": "融资现金流",
+        "Free Cash Flow": "自由现金流",
+        "Capital Expenditure": "资本支出"
+    }
+
+    # 最近一期年报
+    # comprehensive_data.annual_financials 已经是按日期降序排列的
+    latest_annual_financial_records = _get_latest_n_records(comprehensive_data.annual_financials, 1)
+    latest_annual_balance_records = _get_latest_n_records(comprehensive_data.annual_balance_sheet, 1)
+    latest_annual_cashflow_records = _get_latest_n_records(comprehensive_data.annual_cashflow, 1)
+
+    if latest_annual_financial_records:
+        annual_date = latest_annual_financial_records[0].get("date", "N/A") # 'date'字段现在是YYYY-MM-DD
+        lines.append(f"\n最近一期年报 (截至 {annual_date}):")
+        lines.append("  损益表:")
+        lines.extend("    " + s for s in _extract_and_format_metrics(latest_annual_financial_records[0], income_statement_keys))
+        if latest_annual_balance_records:
+            lines.append("  资产负债表:")
+            lines.extend("    " + s for s in _extract_and_format_metrics(latest_annual_balance_records[0], balance_sheet_keys))
+        if latest_annual_cashflow_records:
+            lines.append("  现金流量表:")
+            lines.extend("    " + s for s in _extract_and_format_metrics(latest_annual_cashflow_records[0], cash_flow_keys))
+    else:
+        lines.append("\n无近期年报数据。")
+
+    # 最新两期季报（用于比较）
+    latest_quarterly_financial_records = _get_latest_n_records(comprehensive_data.quarterly_financials, 2)
+    latest_quarterly_balance_records = _get_latest_n_records(comprehensive_data.quarterly_balance_sheet, 2)
+    latest_quarterly_cashflow_records = _get_latest_n_records(comprehensive_data.quarterly_cashflow, 2)
+
+    if latest_quarterly_financial_records:
+        # 最新季报
+        q1_record = latest_quarterly_financial_records[0]
+        q1_date = q1_record.get("date", "N/A")
+        lines.append(f"\n最新季报 (截至 {q1_date}):")
+        lines.append("  损益表:")
+        lines.extend("    " + s for s in _extract_and_format_metrics(q1_record, income_statement_keys))
+        if latest_quarterly_balance_records:
+            lines.append("  资产负债表:")
+            lines.extend("    " + s for s in _extract_and_format_metrics(latest_quarterly_balance_records[0], balance_sheet_keys))
+        if latest_quarterly_cashflow_records:
+            lines.append("  现金流量表:")
+            lines.extend("    " + s for s in _extract_and_format_metrics(latest_quarterly_cashflow_records[0], cash_flow_keys))
+        
+        # 前一季报
+        if len(latest_quarterly_financial_records) > 1:
+            q2_record = latest_quarterly_financial_records[1]
+            q2_date = q2_record.get("date", "N/A")
+            lines.append(f"\n前一季报 (截至 {q2_date}):")
+            lines.append("  损益表:")
+            lines.extend("    " + s for s in _extract_and_format_metrics(q2_record, income_statement_keys))
+            if len(latest_quarterly_balance_records) > 1:
+                lines.append("  资产负债表:")
+                lines.extend("    " + s for s in _extract_and_format_metrics(latest_quarterly_balance_records[1], balance_sheet_keys))
+            if len(latest_quarterly_cashflow_records) > 1:
+                lines.append("  现金流量表:")
+                lines.extend("    " + s for s in _extract_and_format_metrics(latest_quarterly_cashflow_records[1], cash_flow_keys))
+    else:
+        lines.append("\n无近期季报数据。")
+
+
+    # 3. 财报解读要点
+    if interpretations:
+        lines.append("\n--- 财报解读要点 ---")
+        lines.extend(f"- {interp}" for interp in interpretations)
+    else:
+        lines.append("\n--- 财报解读要点 ---")
+        lines.append("无具体财报解读要点，可能因为数据不完整或没有足够的可比数据。")
+
+    return "\n".join(lines) + "\n"

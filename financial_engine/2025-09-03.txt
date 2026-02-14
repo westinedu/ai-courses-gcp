@@ -1,0 +1,84 @@
+Ticker: AAPL
+Date: 2025-09-03
+Company Name: Apple Inc.
+Industry: Consumer Electronics
+
+--- Valuation Metrics ---
+Price-to-Earnings (PE): 36.24
+Price-to-Sales (P/S): 8.66
+Price-to-Book (P/B): 53.82
+
+--- Recent Financials Overview ---
+
+Latest Annual Report (as of 2024-09-30):
+  Income Statement:
+    - Total Revenue: 391.04B
+    - Gross Profit: 180.68B
+    - Operating Income: 123.22B
+    - Net Income: 93.74B
+    - EBITDA: 134.66B
+    - Diluted EPS: 6.08
+  Balance Sheet:
+    - Total Assets: 364.98B
+    - Current Assets: 152.99B
+    - Total Liabilities: 308.03B
+    - Total Debt: 106.63B
+    - Common Stock Equity: 56.95B
+    - Cash & Cash Equivalents: 29.94B
+  Cash Flow Statement:
+    - Operating Cash Flow: 118.25B
+    - Investing Cash Flow: 2.94B
+    - Financing Cash Flow: -121.98B
+    - Free Cash Flow: 108.81B
+    - Capital Expenditure: -9.45B
+
+Latest Quarterly Report (as of 2025-06-30):
+  Income Statement:
+    - Total Revenue: 94.04B
+    - Gross Profit: 43.72B
+    - Operating Income: 28.20B
+    - Net Income: 23.43B
+    - EBITDA: 31.03B
+    - Diluted EPS: 1.57
+  Balance Sheet:
+    - Total Assets: 331.50B
+    - Current Assets: 122.49B
+    - Total Liabilities: 265.67B
+    - Total Debt: 101.70B
+    - Common Stock Equity: 65.83B
+    - Cash & Cash Equivalents: 36.27B
+  Cash Flow Statement:
+    - Operating Cash Flow: 27.87B
+    - Investing Cash Flow: 5.07B
+    - Financing Cash Flow: -24.83B
+    - Free Cash Flow: 24.41B
+    - Capital Expenditure: -3.46B
+
+Previous Quarterly Report (as of 2025-03-31):
+  Income Statement:
+    - Total Revenue: 95.36B
+    - Gross Profit: 44.87B
+    - Operating Income: 29.59B
+    - Net Income: 24.78B
+    - EBITDA: 32.25B
+    - Diluted EPS: 1.65
+  Balance Sheet:
+    - Total Assets: 331.23B
+    - Current Assets: 118.67B
+    - Total Liabilities: 264.44B
+    - Total Debt: 98.19B
+    - Common Stock Equity: 66.80B
+    - Cash & Cash Equivalents: 28.16B
+  Cash Flow Statement:
+    - Operating Cash Flow: 23.95B
+    - Investing Cash Flow: 2.92B
+    - Financing Cash Flow: -29.01B
+    - Free Cash Flow: 20.88B
+    - Capital Expenditure: -3.07B
+
+--- Financial Highlights & Interpretation ---
+- Quarterly Total Revenue decreased by 1.32B (-1.4%) from 95.36B to 94.04B.
+- Quarterly Net Income decreased by 1.35B (-5.4%) from 24.78B to 23.43B.
+- Quarterly Operating Income decreased by 1.39B (-4.7%) from 29.59B to 28.20B.
+- Quarterly Cost Of Revenue decreased by 174.00M (-0.3%) from 50.49B to 50.32B.
+- Quarterly Gross Profit decreased by 1.15B (-2.6%) from 44.87B to 43.72B.
