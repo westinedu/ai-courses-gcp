@@ -78,6 +78,12 @@ _EARNINGS_L1_MISS_TTL_SECONDS = int(os.environ.get("EARNINGS_L1_MISS_TTL_SECONDS
 _EARNINGS_L2_HIT_TTL_SECONDS = int(os.environ.get("EARNINGS_L2_HIT_TTL_SECONDS", "21600"))  # 6 h
 _EARNINGS_L2_MISS_TTL_SECONDS = int(os.environ.get("EARNINGS_L2_MISS_TTL_SECONDS", "3600"))  # 1 h
 
+_HISTORICAL_L1_LOCK = Lock()
+_HISTORICAL_L1_CACHE: Dict[str, Dict[str, Any]] = {}
+_HISTORICAL_L1_MAX_ENTRIES = max(16, int(os.environ.get("HISTORICAL_L1_MAX_ENTRIES", "256")))
+_HISTORICAL_L1_HIT_TTL_SECONDS = int(os.environ.get("HISTORICAL_L1_HIT_TTL_SECONDS", "300"))  # 5 min
+_HISTORICAL_L1_MISS_TTL_SECONDS = int(os.environ.get("HISTORICAL_L1_MISS_TTL_SECONDS", "60"))  # 1 min
+
 # --- Global Constants ---
 # Timezone for scheduling and timestamps (e.g., US market close time)
 TIMEZONE = pytz.timezone(os.environ.get("ENGINE_TZ", 'America/Los_Angeles')) # 从环境变量获取时区
@@ -1120,6 +1126,57 @@ def _resample_to_monthly(df: pd.DataFrame) -> pd.DataFrame:
 
 # --- Historical Data Storage and Update Logic (GCS Integrated) ---
 
+def _historical_l1_get(ticker: str) -> Optional[pd.DataFrame]:
+    t = ticker.upper()
+    now = time.time()
+    with _HISTORICAL_L1_LOCK:
+        entry = _HISTORICAL_L1_CACHE.get(t)
+        if not entry:
+            return None
+        ttl = _HISTORICAL_L1_MISS_TTL_SECONDS if bool(entry.get("is_empty")) else _HISTORICAL_L1_HIT_TTL_SECONDS
+        if now - float(entry.get("cached_at", 0.0)) > float(ttl):
+            _HISTORICAL_L1_CACHE.pop(t, None)
+            return None
+        entry["last_access_at"] = now
+        df = entry.get("df")
+        if not isinstance(df, pd.DataFrame):
+            _HISTORICAL_L1_CACHE.pop(t, None)
+            return None
+        return df.copy(deep=True)
+
+
+def _historical_l1_set(ticker: str, df: pd.DataFrame) -> None:
+    if not isinstance(df, pd.DataFrame):
+        return
+    t = ticker.upper()
+    now = time.time()
+    df_to_cache = df.copy(deep=True)
+    if isinstance(df_to_cache.index, pd.DatetimeIndex):
+        df_to_cache = df_to_cache.sort_index()
+    with _HISTORICAL_L1_LOCK:
+        _HISTORICAL_L1_CACHE[t] = {
+            "df": df_to_cache,
+            "is_empty": bool(df_to_cache.empty),
+            "cached_at": now,
+            "last_access_at": now,
+        }
+        if len(_HISTORICAL_L1_CACHE) <= _HISTORICAL_L1_MAX_ENTRIES:
+            return
+
+        # LRU eviction keeps hot symbols in memory and bounds per-instance RAM usage.
+        victims = sorted(
+            _HISTORICAL_L1_CACHE.items(),
+            key=lambda kv: float(kv[1].get("last_access_at", 0.0)),
+        )
+        excess = len(_HISTORICAL_L1_CACHE) - _HISTORICAL_L1_MAX_ENTRIES
+        for key, _ in victims[:excess]:
+            _HISTORICAL_L1_CACHE.pop(key, None)
+
+
+def _historical_l1_invalidate(ticker: str) -> None:
+    with _HISTORICAL_L1_LOCK:
+        _HISTORICAL_L1_CACHE.pop(ticker.upper(), None)
+
 def _get_gcs_blob_name(ticker: str) -> str:
     """辅助函数，获取股票历史 JSON 文件的 GCS Blob 名称。"""
     return f"historical_data/{ticker.upper()}_historical.json"
@@ -1152,9 +1209,11 @@ def _save_historical_data_to_storage(ticker: str, df: pd.DataFrame) -> str:
             blob.cache_control = "public, max-age=600, stale-while-revalidate=86400"
             
             blob.upload_from_string(json_content, content_type="application/json")
+            _historical_l1_set(ticker, df)
             logger.info("成功保存 %s 历史数据到 GCS: gs://%s/%s", ticker, GCS_BUCKET_NAME, blob_name)
             return f"gs://{GCS_BUCKET_NAME}/{blob_name}"
         except Exception as exc:
+            _historical_l1_invalidate(ticker)
             logger.error("保存 %s 历史数据到 GCS 失败: %s", ticker, exc)
             return ""
     else:
@@ -1162,17 +1221,24 @@ def _save_historical_data_to_storage(ticker: str, df: pd.DataFrame) -> str:
         try:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(json_content)
+            _historical_l1_set(ticker, df)
             logger.warning("GCS_BUCKET_NAME 未设置。已保存 %s 历史数据到本地 fallback: %s (在 Cloud Run 中不持久化)", ticker, filepath)
             return filepath
         except Exception as exc:
+            _historical_l1_invalidate(ticker)
             logger.error("保存 %s 历史数据到本地 fallback 文件 %s 失败: %s", ticker, filepath, exc)
             return ""
 
 
-def _load_historical_data_from_storage(ticker: str) -> pd.DataFrame:
+def _load_historical_data_from_storage(ticker: str, force_reload: bool = False) -> pd.DataFrame:
     """从 GCS 或本地 fallback 加载历史数据到 DataFrame。
     返回带有 **timezone-naive DatetimeIndex** 的 DataFrame。
     """
+    if not force_reload:
+        cached = _historical_l1_get(ticker)
+        if isinstance(cached, pd.DataFrame):
+            return cached
+
     if GCS_BUCKET_NAME:
         try:
             storage_client = storage.Client()
@@ -1182,7 +1248,9 @@ def _load_historical_data_from_storage(ticker: str) -> pd.DataFrame:
             
             if not blob.exists():
                 logger.info("在 GCS 中未找到 %s 的现有 Blob 文件: gs://%s/%s。", ticker, GCS_BUCKET_NAME, blob_name)
-                return pd.DataFrame()
+                empty = pd.DataFrame()
+                _historical_l1_set(ticker, empty)
+                return empty
             
             json_content = blob.download_as_text(encoding="utf-8")
             data = json.loads(json_content)
@@ -1192,6 +1260,8 @@ def _load_historical_data_from_storage(ticker: str) -> pd.DataFrame:
                 # 确保加载后，索引也是 timezone-naive DatetimeIndex
                 df['Date'] = pd.to_datetime(df['Date']) # This naturally creates naive datetimes from YYYY-MM-DD
                 df = df.set_index('Date') # 设置索引以便后续合并/比较
+                df = df.sort_index()
+            _historical_l1_set(ticker, df)
             logger.info("成功从 GCS 加载 %s 历史数据。", ticker)
             return df
         except Exception as exc:
@@ -1201,7 +1271,9 @@ def _load_historical_data_from_storage(ticker: str) -> pd.DataFrame:
         filepath = _get_local_fallback_filepath(ticker)
         if not os.path.exists(filepath):
             logger.info("GCS_BUCKET_NAME 未设置。在本地未找到 %s 的现有 fallback 文件: %s。", ticker, filepath)
-            return pd.DataFrame()
+            empty = pd.DataFrame()
+            _historical_l1_set(ticker, empty)
+            return empty
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -1209,6 +1281,8 @@ def _load_historical_data_from_storage(ticker: str) -> pd.DataFrame:
             if 'Date' in df.columns:
                 df['Date'] = pd.to_datetime(df['Date'])
                 df = df.set_index('Date')
+                df = df.sort_index()
+            _historical_l1_set(ticker, df)
             logger.warning("GCS_BUCKET_NAME 未设置。已从本地 fallback 加载 %s 历史数据: %s", ticker, filepath)
             return df
         except Exception as exc:
@@ -1896,7 +1970,7 @@ async def get_historical_data_endpoint(ticker: str, period: str = Query('1y', pa
             expected = _latest_expected_trading_day(datetime.now(TIMEZONE).date())
             if last_date < expected:
                 _maybe_refresh_daily_once(ticker, min_interval_seconds=600)
-                df = _load_historical_data_from_storage(ticker).sort_index()
+                df = _load_historical_data_from_storage(ticker, force_reload=True).sort_index()
     except Exception:
         pass
 
@@ -2308,7 +2382,7 @@ async def market_candles(
             expected = _latest_expected_trading_day(datetime.now(TIMEZONE).date())
             if last_date < expected:
                 _maybe_refresh_daily_once(s, min_interval_seconds=600)
-                df = _load_historical_data_from_storage(s)
+                df = _load_historical_data_from_storage(s, force_reload=True)
     except Exception:
         pass
 
@@ -2351,14 +2425,18 @@ async def trading_us_analysis(body: Dict[str, Any] = Body(default_factory=dict))
     _ = _clamp_int(body.get("horizonDays"), 1, 1, 10)
     _ = _clamp_int(body.get("backtestWindow"), 252, 20, 756)
 
-    # Ensure stored candles are up-to-date enough (best-effort).
+    df = _load_historical_data_from_storage(symbol)
+    # Ensure stored candles are up-to-date enough (best-effort), but keep L1 hit on fresh data.
     try:
-        _maybe_refresh_daily_once(symbol, min_interval_seconds=600)
+        if not df.empty and isinstance(df.index, pd.DatetimeIndex):
+            last_date = df.index.max().date()
+            expected = _latest_expected_trading_day(datetime.now(TIMEZONE).date())
+            if last_date < expected:
+                _maybe_refresh_daily_once(symbol, min_interval_seconds=600)
+                df = _load_historical_data_from_storage(symbol, force_reload=True)
     except Exception:
-        # ignore for MVP (still try to compute from stored data / fresh fetch)
         pass
 
-    df = _load_historical_data_from_storage(symbol)
     if df.empty:
         df = _fetch_historical_df(symbol, period=_years_to_range(years), interval="1d")
         if df.empty:
