@@ -746,6 +746,8 @@ def _compute_analysis_from_df(
     years: int,
     weights_override: Optional[Dict[str, Any]] = None,
     user_factor: Optional[Dict[str, Any]] = None,
+    horizon_days: int = 1,
+    backtest_window: int = 252,
 ) -> Dict[str, Any]:
     df2 = df.copy()
     if df2.empty or "Close" not in df2.columns:
@@ -754,11 +756,23 @@ def _compute_analysis_from_df(
     df2 = df2.sort_index()
     close = pd.to_numeric(df2["Close"], errors="coerce")
     volume = pd.to_numeric(df2.get("Volume"), errors="coerce") if "Volume" in df2.columns else pd.Series(dtype=float)
+    if close.notna().sum() < 30:
+        raise ValueError("Not enough candles for analysis.")
+
+    # Fixed indicator settings (aligned with current GCP MVP behavior).
+    rsi_period = 14
+    ema_period = 200
+    momentum_window = 20
+    vol_window = 20
 
     # Required windows: allow partial availability, produce neutral scores when missing.
-    rsi_series = _compute_rsi(close.dropna(), 14) if close.notna().sum() >= 30 else pd.Series(dtype=float)
-    macd_df = _compute_macd(close.dropna()) if close.notna().sum() >= 40 else pd.DataFrame()
-    ema200 = close.rolling(window=200).mean()
+    rsi_series = _compute_rsi(close, rsi_period) if close.notna().sum() >= 30 else pd.Series(index=df2.index, dtype=float)
+    macd_df = _compute_macd(close) if close.notna().sum() >= 40 else pd.DataFrame(index=df2.index)
+    hist_series = pd.to_numeric(macd_df.get("hist"), errors="coerce") if "hist" in macd_df.columns else pd.Series(index=df2.index, dtype=float)
+    ema200 = close.rolling(window=ema_period).mean()
+    momentum_series = close / close.shift(momentum_window) - 1.0
+    vol_avg = volume.rolling(window=vol_window).mean() if not volume.empty else pd.Series(index=df2.index, dtype=float)
+    vol_ratio = volume / vol_avg if not volume.empty else pd.Series(index=df2.index, dtype=float)
 
     latest_close = float(close.iloc[-1]) if np.isfinite(close.iloc[-1]) else None
     if latest_close is None:
@@ -766,21 +780,28 @@ def _compute_analysis_from_df(
 
     as_of_ms = _to_ms(datetime(df2.index[-1].year, df2.index[-1].month, df2.index[-1].day, tzinfo=pytz.UTC))
 
+    def _rsi_score(val: Any) -> float:
+        try:
+            r = float(val)
+        except Exception:
+            return 0.0
+        if not np.isfinite(r):
+            return 0.0
+        if r <= 30:
+            s = 0.5 + 0.5 * (30 - r) / 30
+        elif r >= 70:
+            s = -0.5 - 0.5 * (r - 70) / 30
+        else:
+            # Keep existing GCP mapping behavior for backward compatibility.
+            s = (r - 50) / 40
+        return float(np.clip(s, -1, 1))
+
     # Factors
     factors: List[Dict[str, Any]] = []
 
     # RSI(14)
     rsi_val = float(rsi_series.iloc[-1]) if len(rsi_series) and np.isfinite(rsi_series.iloc[-1]) else None
-    rsi_score = 0.0
-    if rsi_val is not None:
-        if rsi_val <= 30:
-            rsi_score = 0.5 + 0.5 * (30 - rsi_val) / 30
-        elif rsi_val >= 70:
-            rsi_score = -0.5 - 0.5 * (rsi_val - 70) / 30
-        else:
-            # map 30..70 to -0.5..+0.5 around 50
-            rsi_score = (rsi_val - 50) / 40
-        rsi_score = float(np.clip(rsi_score, -1, 1))
+    rsi_score = _rsi_score(rsi_val)
 
     factors.append(
         {
@@ -796,8 +817,7 @@ def _compute_analysis_from_df(
     # MACD histogram
     hist_val = None
     macd_score = 0.0
-    if not macd_df.empty and "hist" in macd_df.columns:
-        hist_series = pd.to_numeric(macd_df["hist"], errors="coerce")
+    if not hist_series.empty:
         hist_val_raw = hist_series.iloc[-1] if len(hist_series) else np.nan
         if np.isfinite(hist_val_raw):
             hist_val = float(hist_val_raw)
@@ -840,11 +860,10 @@ def _compute_analysis_from_df(
     # Momentum 20D
     mom_score = 0.0
     mom_val = None
-    if close.notna().sum() >= 25:
-        prev = close.iloc[-21]
-        if np.isfinite(prev) and float(prev) != 0.0:
-            mom_val = float(latest_close / float(prev) - 1.0)
-            mom_score = float(np.tanh(mom_val * 10.0))
+    mom_raw = momentum_series.iloc[-1] if len(momentum_series) else np.nan
+    if np.isfinite(mom_raw):
+        mom_val = float(mom_raw)
+        mom_score = float(np.tanh(mom_val * 10.0))
 
     factors.append(
         {
@@ -860,13 +879,11 @@ def _compute_analysis_from_df(
     # Volume trend (ratio to 20D avg)
     vol_score = 0.0
     vol_val = None
-    if not volume.empty and volume.notna().sum() >= 25:
-        vol_avg = volume.rolling(window=20).mean().iloc[-1]
-        vol_latest = volume.iloc[-1]
-        if np.isfinite(vol_avg) and np.isfinite(vol_latest) and float(vol_avg) > 0:
-            vol_val = float(vol_latest / float(vol_avg))
-            # > 1 means higher-than-usual participation
-            vol_score = float(np.tanh((vol_val - 1.0) * 1.5))
+    vol_raw = vol_ratio.iloc[-1] if len(vol_ratio) else np.nan
+    if np.isfinite(vol_raw):
+        vol_val = float(vol_raw)
+        # > 1 means higher-than-usual participation
+        vol_score = float(np.tanh((vol_val - 1.0) * 1.5))
 
     factors.append(
         {
@@ -922,6 +939,13 @@ def _compute_analysis_from_df(
         f["contribution"] = float(w) * float(f["score"] or 0.0)
         agg_score += f["contribution"]
 
+    abs_contrib_sum = max(1e-9, sum(abs(float(f.get("contribution") or 0.0)) for f in factors))
+    contributions = [
+        {"id": str(f.get("id")), "pct": float(abs(float(f.get("contribution") or 0.0)) / abs_contrib_sum)}
+        for f in factors
+    ]
+    contributions = sorted(contributions, key=lambda x: float(x.get("pct", 0.0)), reverse=True)
+
     # Simple probability mapping (MVP).
     p_up = float(_sigmoid(agg_score * 1.6))
     p_down = float(1.0 - p_up)
@@ -931,6 +955,95 @@ def _compute_analysis_from_df(
         signal = "BUY"
     elif p_up < 0.4:
         signal = "SELL"
+
+    # Backtest (walk-forward; lightweight, aligned with current factor definitions).
+    horizon_days = _clamp_int(horizon_days, 1, 1, 10)
+    backtest_window = _clamp_int(backtest_window, 252, 20, 756)
+    last_eval_idx = len(df2) - 1 - horizon_days
+    correct = 0
+    evaluated = 0
+    brier_sum = 0.0
+    backtest_start: Optional[str] = None
+    backtest_end: Optional[str] = None
+    start_idx: Optional[int] = None
+
+    if last_eval_idx >= 0:
+        default_warmup = 220 if len(df2) >= 260 else max(30, int(len(df2) * 0.45))
+        warmup = min(default_warmup, max(0, last_eval_idx))
+        start_idx = max(warmup, last_eval_idx - backtest_window + 1)
+
+        for i in range(start_idx, last_eval_idx + 1):
+            c = close.iloc[i]
+            nxt = close.iloc[i + horizon_days]
+            if not (np.isfinite(c) and np.isfinite(nxt)):
+                continue
+
+            # Per-index factor scores
+            s_rsi = _rsi_score(rsi_series.iloc[i] if i < len(rsi_series) else np.nan)
+
+            s_macd = 0.0
+            hist_i = hist_series.iloc[i] if i < len(hist_series) else np.nan
+            if np.isfinite(hist_i):
+                recent_i = hist_series.iloc[max(0, i - 119): i + 1].dropna()
+                denom_i = float(recent_i.std()) if len(recent_i) >= 30 and np.isfinite(recent_i.std()) else 1.0
+                denom_i = max(1e-9, denom_i * 2.0)
+                s_macd = float(np.tanh(float(hist_i) / denom_i))
+
+            s_ema = 0.0
+            ema_i = ema200.iloc[i] if i < len(ema200) else np.nan
+            if np.isfinite(ema_i) and float(ema_i) != 0.0:
+                s_ema = float(np.tanh((float(c) / float(ema_i) - 1.0) * 8.0))
+
+            s_mom = 0.0
+            mom_i = momentum_series.iloc[i] if i < len(momentum_series) else np.nan
+            if np.isfinite(mom_i):
+                s_mom = float(np.tanh(float(mom_i) * 10.0))
+
+            s_vol = 0.0
+            vol_i = vol_ratio.iloc[i] if i < len(vol_ratio) else np.nan
+            if np.isfinite(vol_i):
+                s_vol = float(np.tanh((float(vol_i) - 1.0) * 1.5))
+
+            s_user = float(user_score)
+
+            agg_i = (
+                float(weights.get("rsi14", 0.0)) * s_rsi
+                + float(weights.get("macdHist", 0.0)) * s_macd
+                + float(weights.get("ema200Trend", 0.0)) * s_ema
+                + float(weights.get("momentum20", 0.0)) * s_mom
+                + float(weights.get("volumeTrend", 0.0)) * s_vol
+                + float(weights.get("user", 0.0)) * s_user
+            )
+            p_i = float(_sigmoid(float(agg_i) * 1.6))
+            outcome_up = 1 if float(nxt) > float(c) else 0
+            pred_up = 1 if p_i >= 0.5 else 0
+            if pred_up == outcome_up:
+                correct += 1
+            evaluated += 1
+            brier_sum += float((p_i - outcome_up) ** 2)
+
+        if evaluated and start_idx is not None:
+            idx_start = df2.index[start_idx]
+            idx_end = df2.index[last_eval_idx]
+            backtest_start = idx_start.strftime("%Y-%m-%d")
+            backtest_end = idx_end.strftime("%Y-%m-%d")
+
+    accuracy = float(correct / evaluated) if evaluated else 0.0
+    brier = float(brier_sum / evaluated) if evaluated else 0.25
+    backtest = {
+        "window": int(backtest_window),
+        "evaluated": int(evaluated),
+        "accuracy": accuracy,
+        "brier": brier,
+        "start": backtest_start,
+        "end": backtest_end,
+    }
+
+    notes: List[str] = ["For research/education only, not investment advice."]
+    if len(df2) < 260:
+        notes.append("Limited history window may reduce indicator stability.")
+    if volume.empty or volume.notna().sum() == 0:
+        notes.append("Volume data unavailable; volumeTrend score defaults toward neutral.")
 
     return {
         "symbol": symbol,
@@ -949,6 +1062,9 @@ def _compute_analysis_from_df(
             "confidence": confidence,
         },
         "factors": factors,
+        "contributions": contributions,
+        "backtest": backtest,
+        "notes": notes,
         "meta": {
             "provider": "yfinance",
             "years": years,
@@ -1487,10 +1603,38 @@ def _analysis_request_is_baseline(body: Dict[str, Any]) -> bool:
         return True
     weights = body.get("weights")
     user_factor = body.get("userFactor")
+    days = _clamp_int(body.get("days"), 0, 0, 5000)
+    horizon_days = _clamp_int(body.get("horizonDays"), 1, 1, 10)
+    backtest_window = _clamp_int(body.get("backtestWindow"), 252, 20, 756)
     # If user passes custom weights or user factor, the output becomes user-specific -> do not cache globally.
     if isinstance(weights, dict) and len(weights):
         return False
     if isinstance(user_factor, dict) and len(user_factor):
+        return False
+    # `days` changes the effective analysis window; do not mix into global baseline cache path.
+    if days > 0:
+        return False
+    # Non-default evaluation settings should not reuse the global baseline cache.
+    if horizon_days != 1 or backtest_window != 252:
+        return False
+    return True
+
+
+def _analysis_cache_payload_is_compatible(payload: Dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if not isinstance(payload.get("aggregate"), dict):
+        return False
+    if not isinstance(payload.get("factors"), list):
+        return False
+    backtest = payload.get("backtest")
+    if not isinstance(backtest, dict):
+        return False
+    if not all(k in backtest for k in ("evaluated", "accuracy", "brier")):
+        return False
+    if not isinstance(payload.get("contributions"), list):
+        return False
+    if not isinstance(payload.get("notes"), list):
         return False
     return True
 
@@ -2421,9 +2565,9 @@ async def trading_us_analysis(body: Dict[str, Any] = Body(default_factory=dict))
     """
     symbol = _normalize_symbol(body.get("symbol"))
     years = _clamp_int(body.get("years"), 5, 1, 10)
-    # horizonDays/backtestWindow 先接受但不使用（留给订阅后升级）。
-    _ = _clamp_int(body.get("horizonDays"), 1, 1, 10)
-    _ = _clamp_int(body.get("backtestWindow"), 252, 20, 756)
+    days = _clamp_int(body.get("days"), 0, 0, 5000)
+    horizon_days = _clamp_int(body.get("horizonDays"), 1, 1, 10)
+    backtest_window = _clamp_int(body.get("backtestWindow"), 252, 20, 756)
 
     df = _load_historical_data_from_storage(symbol)
     # Ensure stored candles are up-to-date enough (best-effort), but keep L1 hit on fresh data.
@@ -2446,17 +2590,37 @@ async def trading_us_analysis(body: Dict[str, Any] = Body(default_factory=dict))
 
     try:
         df = df.sort_index()
-        analysis_date = df.index.max().date() if isinstance(df.index, pd.DatetimeIndex) and len(df.index) else datetime.now(TIMEZONE).date()
+        df_for_analysis = df
+        if len(df_for_analysis):
+            if days > 0:
+                df_for_analysis = df_for_analysis.tail(days)
+            else:
+                max_points = max(30, int(years) * 260)
+                df_for_analysis = df_for_analysis.tail(max_points)
+
+        analysis_date = (
+            df_for_analysis.index.max().date()
+            if isinstance(df_for_analysis.index, pd.DatetimeIndex) and len(df_for_analysis)
+            else datetime.now(TIMEZONE).date()
+        )
 
         is_baseline = _analysis_request_is_baseline(body)
-        inflight_key = f"{symbol}:{analysis_date.isoformat()}:{years}"
+        inflight_key = f"{symbol}:{analysis_date.isoformat()}:{years}:d{days}:h{horizon_days}:bt{backtest_window}"
 
         if is_baseline:
             cached = _load_analysis_from_storage(symbol, analysis_date)
-            if isinstance(cached, dict):
+            if isinstance(cached, dict) and _analysis_cache_payload_is_compatible(cached):
                 # Keep response meta fresh without mutating the cached object too much.
                 meta = cached.get("meta") if isinstance(cached.get("meta"), dict) else {}
-                meta = {**meta, "servedFrom": "gcs-cache", "servedAt": datetime.now(TIMEZONE).isoformat(), "years": years}
+                meta = {
+                    **meta,
+                    "servedFrom": "gcs-cache",
+                    "servedAt": datetime.now(TIMEZONE).isoformat(),
+                    "years": years,
+                    "days": days if days > 0 else None,
+                    "horizonDays": horizon_days,
+                    "backtestWindow": backtest_window,
+                }
                 cached["meta"] = meta
                 return JSONResponse(
                     content=cached,
@@ -2476,9 +2640,17 @@ async def trading_us_analysis(body: Dict[str, Any] = Body(default_factory=dict))
                 # Wait for the leader to finish computing & persisting, then try load again.
                 ev.wait(timeout=12.0)
                 cached2 = _load_analysis_from_storage(symbol, analysis_date)
-                if isinstance(cached2, dict):
+                if isinstance(cached2, dict) and _analysis_cache_payload_is_compatible(cached2):
                     meta = cached2.get("meta") if isinstance(cached2.get("meta"), dict) else {}
-                    meta = {**meta, "servedFrom": "gcs-cache", "servedAt": datetime.now(TIMEZONE).isoformat(), "years": years}
+                    meta = {
+                        **meta,
+                        "servedFrom": "gcs-cache",
+                        "servedAt": datetime.now(TIMEZONE).isoformat(),
+                        "years": years,
+                        "days": days if days > 0 else None,
+                        "horizonDays": horizon_days,
+                        "backtestWindow": backtest_window,
+                    }
                     cached2["meta"] = meta
                     return JSONResponse(
                         content=cached2,
@@ -2487,11 +2659,18 @@ async def trading_us_analysis(body: Dict[str, Any] = Body(default_factory=dict))
 
         analysis_payload = _compute_analysis_from_df(
             symbol=symbol,
-            df=df,
+            df=df_for_analysis,
             years=years,
             weights_override=body.get("weights") if isinstance(body.get("weights"), dict) else None,
             user_factor=body.get("userFactor") if isinstance(body.get("userFactor"), dict) else None,
+            horizon_days=horizon_days,
+            backtest_window=backtest_window,
         )
+        if isinstance(analysis_payload.get("meta"), dict):
+            analysis_payload["meta"]["days"] = days if days > 0 else None
+            analysis_payload["meta"]["horizonDays"] = horizon_days
+            analysis_payload["meta"]["backtestWindow"] = backtest_window
+
         if is_baseline:
             path = _try_save_analysis_if_absent(symbol, analysis_date, analysis_payload)
             if path:
