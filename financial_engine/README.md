@@ -43,6 +43,13 @@ financial_engine/
 | `FINANCIAL_L1_HIT_TTL_SECONDS` | L1 命中缓存 TTL（秒） | `600` |
 | `FINANCIAL_L1_MISS_TTL_SECONDS` | L1 空结果 TTL（秒） | `120` |
 | `FINANCIAL_NO_EARNINGS_MAX_STALENESS_DAYS` | 若拿不到 earnings day，超过该天数自动兜底刷新 | `3` |
+| `REPORT_SOURCE_PREFIX` | 财报官网来源结果保存前缀（GCS 路径前缀） | `report_sources` |
+| `REPORT_SOURCE_CACHE_TTL_SECONDS` | 财报官网来源缓存 TTL（秒） | `86400` |
+| `REPORT_SOURCE_MAX_CANDIDATES` | 单 ticker 最大候选 URL 数 | `24` |
+| `REPORT_SOURCE_ENABLE_AI` | 是否启用 Vertex AI 复核（`1/true` 启用） | `0` |
+| `VERTEX_PROJECT` | Vertex AI 项目 ID（未设时回退 `GOOGLE_CLOUD_PROJECT`） | `""` |
+| `VERTEX_LOCATION` | Vertex AI 区域 | `us-central1` |
+| `REPORT_SOURCE_AI_MODEL` | Vertex AI 复核模型 | `gemini-1.5-flash-002` |
 
 > **建议**：生产环境通过 Cloud Run 的 `--set-env-vars` 或 Secret Manager 配置。
 
@@ -51,13 +58,16 @@ financial_engine/
 ## 本地开发
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8080 --reload
+cd GCP/financial_engine
+./run_local.sh
 ```
 
 访问：`http://localhost:8080/docs` 查看 Swagger UI。
+
+可选参数（环境变量）：
+- `PORT=9000 ./run_local.sh`：改端口
+- `RELOAD=0 ./run_local.sh`：关闭热更新
+- `INSTALL_DEPS=0 ./run_local.sh`：跳过依赖安装
 
 ---
 
@@ -148,6 +158,42 @@ docker run -p 8080:8080 \
   返回当日清单：`[{"ticker":"AAPL","path":"gs://.../ai_context/AAPL/2025-08-11.txt"}, ...]`
 - `GET /ai_context/{ticker}/by_date/{date}`  
   返回单个路径：`{"ticker":"AAPL","date":"2025-08-11","path":"gs://.../ai_context/AAPL/2025-08-11.txt"}`
+
+### 财报官网来源发现与验证（Report Source）
+- `GET /stockflow/report_source/{ticker}?force_refresh=0|1`  
+  获取单只股票财报官网来源（IR/Reports/SEC）并返回验证结果。
+- `POST /stockflow/report_source/batch_refresh`  
+  请求体：`{"tickers":["AAPL","MSFT"],"force_refresh":true}`，批量发现与验证。
+- `GET /stockflow/report_source/catalog/list?limit=500&ticker_prefix=A`  
+  获取已缓存目录（优先 GCS，失败回退本地 `data/`）。
+- `GET /report_source/catalog`  
+  内置可视化目录页，可直接浏览、批量刷新、单条刷新（用于人工快速验收）。
+
+---
+
+## 快速验证（本地 + GCP 通用）
+
+### 本地
+1. 启动服务：
+   ```bash
+   cd GCP/financial_engine
+   ./run_local.sh
+   ```
+2. 打开目录页：`http://localhost:8080/report_source/catalog`
+3. 点击 `Resolve Input Tickers`，输入如 `AAPL,MSFT,NVDA`，观察：
+   - `verification_status`（`verified/partial/not_found`）
+   - `IR / Reports / SEC` 链接可否打开
+4. 也可直接调用 API：
+   ```bash
+   curl "http://localhost:8080/stockflow/report_source/AAPL?force_refresh=1"
+   ```
+
+### GCP（Cloud Run）
+1. 部署后访问：`https://<financial-engine-service-url>/report_source/catalog`
+2. 同步可用 API：
+   - `https://<service-url>/stockflow/report_source/{ticker}`
+   - `https://<service-url>/stockflow/report_source/catalog/list`
+3. 建议只对内网或管理员开放该页面/接口（例如 Cloud Run IAM、IAP 或反向代理鉴权）。
 
 ---
 

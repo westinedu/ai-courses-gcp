@@ -21,6 +21,7 @@ financial-engine / main.py
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -40,8 +41,11 @@ import numpy as np  # 确保导入 numpy
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from google.cloud import storage
+
+from report_source import ReportSourceService
 
 # Configure logging
 logging.basicConfig(
@@ -58,6 +62,9 @@ os.makedirs(DATA_DIR, exist_ok=True)
 # 强烈建议通过环境变量来设置桶名称，以便灵活配置。
 GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "financial-data-engine-bucket")
 ENGINE_TZ = os.environ.get("ENGINE_TZ", "America/Los_Angeles")
+REPORT_SOURCE_PREFIX = os.environ.get("REPORT_SOURCE_PREFIX", "report_sources")
+REPORT_SOURCE_CACHE_TTL_SECONDS = int(os.environ.get("REPORT_SOURCE_CACHE_TTL_SECONDS", "86400"))
+REPORT_SOURCE_MAX_CANDIDATES = int(os.environ.get("REPORT_SOURCE_MAX_CANDIDATES", "24"))
 tz = pytz.timezone(ENGINE_TZ)
 # Create FastAPI app
 app = FastAPI(
@@ -87,6 +94,7 @@ class FinancialData(BaseModel):
 
 # 财报缓存：{ ticker: { 'interpretation_data': Dict, 'interpretations': List[str], 'last_updated': iso, 'saved_file_path': Optional[str], 'ai_context_path': Optional[str], 'daily_index_path': Optional[str] } }
 earnings_cache: Dict[str, Dict] = {}
+_report_source_service: Optional[ReportSourceService] = None
 
 # --- In-process de-dup / L1 cache (per Cloud Run instance, best effort) ---
 _FINANCIAL_LOCK = Lock()
@@ -100,6 +108,19 @@ _FINANCIAL_NO_EARNINGS_MAX_STALENESS_DAYS = int(
 
 # Trading service endpoint (used as source-of-truth for earnings day schedule).
 TRADING_DATA_ENGINE_URL = os.environ.get("TRADING_DATA_ENGINE_URL", "").strip()
+
+
+def _get_report_source_service() -> ReportSourceService:
+    global _report_source_service
+    if _report_source_service is None:
+        _report_source_service = ReportSourceService(
+            bucket_name=GCS_BUCKET_NAME,
+            local_data_dir=DATA_DIR,
+            prefix=REPORT_SOURCE_PREFIX,
+            cache_ttl_seconds=REPORT_SOURCE_CACHE_TTL_SECONDS,
+            max_candidates=REPORT_SOURCE_MAX_CANDIDATES,
+        )
+    return _report_source_service
 
 
 def _today_str() -> str:
@@ -1470,6 +1491,12 @@ async def shutdown_event():
     if scheduler:
         scheduler.shutdown()
         logger.info("Scheduler shutdown.")
+    global _report_source_service
+    if _report_source_service is not None:
+        try:
+            _report_source_service.fetcher.close()
+        except Exception:
+            pass
     logger.info("Application shutdown event triggered.")
 
 
@@ -1632,6 +1659,11 @@ class TickerList(BaseModel):
     tickers: List[str] = Field(default_factory=list, description="要刷新的股票列表")
 
 
+class ReportSourceBatchRequest(BaseModel):
+    tickers: List[str] = Field(default_factory=list, description="要获取财报官网来源的股票列表")
+    force_refresh: bool = Field(default=False, description="是否绕过缓存强制刷新")
+
+
 @app.post("/batch_refresh", summary="批量刷新指定股票列表")
 # --- API：批量刷新自定义列表（图卡/运营调度用） ---
 async def batch_refresh(payload: TickerList) -> Dict[str, Any]:
@@ -1655,6 +1687,305 @@ async def batch_refresh(payload: TickerList) -> Dict[str, Any]:
     logger.info("Batch refresh requested for tickers: %s", tickers_to_refresh)
     update_earnings_cache_job(tickers_to_refresh)
     return {"message": f"Batch processing initiated for {len(tickers_to_refresh)} tickers. Check logs for details."}
+
+
+@app.get("/stockflow/report_source/{ticker}", summary="获取单只股票的财报官网来源并做验证")
+async def get_report_source(
+    ticker: str,
+    force_refresh: int = Query(0, ge=0, le=1, description="是否强制绕过缓存刷新"),
+) -> Dict[str, Any]:
+    """
+    获取并验证某只股票的财报官网来源页面（IR 首页 / 财报页 / SEC filings 页）。
+
+    说明：
+    - 本接口采用模块化流程（候选发现 -> 页面抓取 -> 验证评分 -> 可选 AI 复核 -> 持久化）。
+    - 不影响现有财报抓取、因子计算与批量刷新逻辑。
+    """
+    t = ticker.upper().strip()
+    if not t:
+        raise HTTPException(status_code=400, detail="ticker is required")
+    service = _get_report_source_service()
+    return await asyncio.to_thread(service.resolve, t, bool(force_refresh))
+
+
+@app.post("/stockflow/report_source/batch_refresh", summary="批量获取财报官网来源并验证")
+async def batch_refresh_report_source(payload: ReportSourceBatchRequest) -> Dict[str, Any]:
+    """
+    批量获取并验证财报官网来源，适合被 batch job 或运维脚本调用。
+    """
+    tickers = [str(t).strip().upper() for t in (payload.tickers or []) if str(t).strip()]
+    if not tickers:
+        raise HTTPException(status_code=400, detail="tickers is required")
+    service = _get_report_source_service()
+    return await asyncio.to_thread(service.resolve_batch, tickers, bool(payload.force_refresh))
+
+
+@app.get("/stockflow/report_source/catalog/list", summary="获取已缓存的财报官网来源目录")
+async def list_report_source_catalog(
+    limit: int = Query(500, ge=1, le=2000, description="最大返回条数"),
+    ticker_prefix: str = Query("", description="按 ticker 前缀过滤"),
+) -> Dict[str, Any]:
+    service = _get_report_source_service()
+    return await asyncio.to_thread(service.list_catalog, int(limit), ticker_prefix)
+
+
+@app.get("/report_source/catalog", summary="财报官网来源目录页面", response_class=HTMLResponse)
+async def report_source_catalog_page() -> HTMLResponse:
+    default_list = ",".join(default_tickers[:20])
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Report Source Catalog</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #f5f7fb; color: #0f172a; }}
+    .wrap {{ max-width: 1280px; margin: 24px auto; padding: 0 16px; }}
+    .panel {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; box-shadow: 0 6px 20px rgba(2, 6, 23, .04); }}
+    h1 {{ margin: 0 0 12px; font-size: 24px; }}
+    .row {{ display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }}
+    input, textarea {{ border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 10px; font-size: 14px; }}
+    input {{ width: 140px; }}
+    textarea {{ width: 100%; min-height: 58px; }}
+    button {{ border: 1px solid #0ea5e9; background: #0ea5e9; color: #fff; border-radius: 8px; padding: 8px 12px; cursor: pointer; font-weight: 600; }}
+    button.alt {{ border-color: #94a3b8; background: #fff; color: #334155; }}
+    button.warn {{ border-color: #f59e0b; background: #f59e0b; }}
+    .meta {{ font-size: 12px; color: #64748b; margin-top: 8px; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; }}
+    th, td {{ border-bottom: 1px solid #eef2f7; padding: 8px; text-align: left; vertical-align: top; }}
+    th {{ background: #f8fafc; position: sticky; top: 0; z-index: 2; }}
+    .tag {{ display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }}
+    .ok {{ background: #dcfce7; color: #166534; }}
+    .partial {{ background: #fef9c3; color: #854d0e; }}
+    .nf {{ background: #fee2e2; color: #991b1b; }}
+    .small {{ font-size: 12px; color: #64748b; }}
+    .links a {{ display: block; max-width: 360px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #0369a1; text-decoration: none; }}
+    .links a:hover {{ text-decoration: underline; }}
+    .sticky {{ position: sticky; top: 0; background: #f5f7fb; padding: 8px 0 12px; z-index: 3; }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="sticky">
+      <h1>Report Source Catalog</h1>
+      <div class="panel">
+        <div class="row">
+          <input id="limit" type="number" min="1" max="2000" value="500" />
+          <input id="prefix" placeholder="Ticker prefix e.g. A" />
+          <button id="loadCached">Load Cached Directory</button>
+          <button id="loadSample" class="alt">Use Sample 20</button>
+          <button id="resolveInput" class="warn">Resolve Input Tickers</button>
+        </div>
+        <textarea id="tickers" placeholder="Comma/space separated tickers, e.g. AAPL, MSFT, NVDA">{default_list}</textarea>
+        <div class="meta" id="meta">Ready.</div>
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th style="width:88px;">Ticker</th>
+          <th style="width:170px;">Company</th>
+          <th style="width:86px;">Status</th>
+          <th style="width:86px;">Conf.</th>
+          <th>Links</th>
+          <th style="width:120px;">Candidates</th>
+          <th style="width:170px;">Discovered</th>
+          <th style="width:90px;">Action</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <script>
+    const meta = document.getElementById("meta");
+    const rowsEl = document.getElementById("rows");
+    const limitEl = document.getElementById("limit");
+    const prefixEl = document.getElementById("prefix");
+    const tickersEl = document.getElementById("tickers");
+    const resolveInputBtn = document.getElementById("resolveInput");
+    let currentItems = [];
+    let isResolving = false;
+
+    function parseTickers(raw) {{
+      return Array.from(new Set(
+        String(raw || "")
+          .toUpperCase()
+          .split(/[^A-Z0-9.^=-]+/)
+          .map(s => s.trim())
+          .filter(Boolean)
+      ));
+    }}
+
+    function esc(s) {{
+      return String(s || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }}
+
+    function statusTag(status) {{
+      const s = String(status || "").toLowerCase();
+      if (s === "verified") return `<span class="tag ok">verified</span>`;
+      if (s === "partial") return `<span class="tag partial">partial</span>`;
+      if (s === "error") return `<span class="tag nf">error</span>`;
+      return `<span class="tag nf">${{esc(s || "n/a")}}</span>`;
+    }}
+
+    function normalizeItem(item) {{
+      const out = Object.assign({{}}, item || {{}});
+      if (out.candidate_count == null && out.evidence && typeof out.evidence === "object") {{
+        out.candidate_count = out.evidence.candidate_count ?? "";
+      }}
+      return out;
+    }}
+
+    function linkBlock(item) {{
+      const lines = [];
+      if (item.ir_home_url) lines.push(`<a href="${{esc(item.ir_home_url)}}" target="_blank" rel="noopener">IR: ${{esc(item.ir_home_url)}}</a>`);
+      if (item.financial_reports_url) lines.push(`<a href="${{esc(item.financial_reports_url)}}" target="_blank" rel="noopener">Reports: ${{esc(item.financial_reports_url)}}</a>`);
+      if (item.sec_filings_url) lines.push(`<a href="${{esc(item.sec_filings_url)}}" target="_blank" rel="noopener">SEC: ${{esc(item.sec_filings_url)}}</a>`);
+      if (item.error) lines.push(`<span class="small" style="color:#991b1b;">${{esc(item.error)}}</span>`);
+      return lines.length ? `<div class="links">${{lines.join("")}}</div>` : `<span class="small">No verified links</span>`;
+    }}
+
+    function rowHtml(item) {{
+      return `
+        <tr>
+          <td><strong>${{esc(item.ticker)}}</strong></td>
+          <td>${{esc(item.company_name || "")}}</td>
+          <td>${{statusTag(item.verification_status)}}</td>
+          <td>${{Number(item.confidence || 0).toFixed(3)}}</td>
+          <td>${{linkBlock(item)}}</td>
+          <td>${{esc(item.candidate_count ?? "")}}</td>
+          <td><span class="small">${{esc(item.discovered_at || "")}}</span></td>
+          <td><button class="alt" onclick="refreshOne('${{esc(item.ticker)}}')">Refresh</button></td>
+        </tr>
+      `;
+    }}
+
+    function render(items) {{
+      currentItems = (items || []).map(normalizeItem);
+      rowsEl.innerHTML = currentItems.map(rowHtml).join("");
+    }}
+
+    function upsertItem(item, append = true) {{
+      const normalized = normalizeItem(item);
+      const ticker = String(normalized.ticker || "").toUpperCase();
+      if (!ticker) return;
+      normalized.ticker = ticker;
+
+      const idx = currentItems.findIndex(x => String((x || {{}}).ticker || "").toUpperCase() === ticker);
+      if (idx >= 0) {{
+        currentItems[idx] = normalized;
+      }} else if (append) {{
+        currentItems.push(normalized);
+      }} else {{
+        currentItems.unshift(normalized);
+      }}
+      rowsEl.innerHTML = currentItems.map(rowHtml).join("");
+    }}
+
+    async function loadCached() {{
+      const limit = Math.max(1, Math.min(2000, Number(limitEl.value || 500)));
+      const prefix = encodeURIComponent(prefixEl.value || "");
+      try {{
+        meta.textContent = "Loading cached directory...";
+        const res = await fetch(`/stockflow/report_source/catalog/list?limit=${{limit}}&ticker_prefix=${{prefix}}`);
+        const data = await res.json();
+        if (!res.ok) {{
+          throw new Error(String(data.detail || `HTTP ${{res.status}}`));
+        }}
+        const items = Array.isArray(data.items) ? data.items : [];
+        render(items);
+        meta.textContent = `Loaded ${{items.length}} records (cached).`;
+      }} catch (err) {{
+        meta.textContent = `Load cached failed: ${{String(err && err.message ? err.message : err)}}`;
+      }}
+    }}
+
+    async function resolveInput() {{
+      if (isResolving) {{
+        meta.textContent = "Resolve is already running...";
+        return;
+      }}
+      const tickers = parseTickers(tickersEl.value);
+      if (!tickers.length) {{
+        meta.textContent = "No valid tickers.";
+        return;
+      }}
+      isResolving = true;
+      resolveInputBtn.disabled = true;
+      currentItems = [];
+      rowsEl.innerHTML = "";
+
+      let success = 0;
+      let failed = 0;
+      try {{
+        for (let i = 0; i < tickers.length; i++) {{
+          const ticker = tickers[i];
+          meta.textContent = `Resolving ${{i + 1}}/${{tickers.length}}: ${{ticker}} (success ${{success}}, failed ${{failed}})...`;
+          try {{
+            const res = await fetch(`/stockflow/report_source/${{encodeURIComponent(ticker)}}?force_refresh=1`);
+            const data = await res.json();
+            if (!res.ok) {{
+              throw new Error(String(data.detail || `HTTP ${{res.status}}`));
+            }}
+            upsertItem(data, true);
+            success += 1;
+          }} catch (err) {{
+            failed += 1;
+            upsertItem({{
+              ticker,
+              company_name: "",
+              verification_status: "error",
+              confidence: 0,
+              candidate_count: "",
+              discovered_at: new Date().toISOString(),
+              error: String(err && err.message ? err.message : err),
+            }}, true);
+          }}
+        }}
+      }} finally {{
+        isResolving = false;
+        resolveInputBtn.disabled = false;
+      }}
+      meta.textContent = `Resolved ${{success}} / ${{tickers.length}} tickers, failed ${{failed}}.`;
+    }}
+
+    async function refreshOne(ticker) {{
+      if (isResolving) {{
+        meta.textContent = "Please wait for current resolve to finish.";
+        return;
+      }}
+      meta.textContent = `Refreshing ${{ticker}}...`;
+      try {{
+        const res = await fetch(`/stockflow/report_source/${{encodeURIComponent(ticker)}}?force_refresh=1`);
+        const item = await res.json();
+        if (!res.ok) {{
+          throw new Error(String(item.detail || `HTTP ${{res.status}}`));
+        }}
+        upsertItem(item, false);
+        meta.textContent = `Refreshed ${{ticker}}.`;
+      }} catch (err) {{
+        meta.textContent = `Refresh failed for ${{ticker}}: ${{String(err && err.message ? err.message : err)}}`;
+      }}
+    }}
+    window.refreshOne = refreshOne;
+
+    document.getElementById("loadCached").addEventListener("click", loadCached);
+    document.getElementById("resolveInput").addEventListener("click", resolveInput);
+    document.getElementById("loadSample").addEventListener("click", () => {{
+      tickersEl.value = "{default_list}";
+    }});
+
+    loadCached();
+  </script>
+</body>
+</html>
+"""
+    return HTMLResponse(content=html)
 
 
 @app.get("/ai_context/daily_index", summary="获取指定日期的AI context清单")
