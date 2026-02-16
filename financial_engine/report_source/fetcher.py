@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
+import os
 import re
 from html import unescape
 from html.parser import HTMLParser
-from typing import List
+from typing import Any, Dict, List
 from urllib.parse import parse_qs, quote_plus, urlparse
 
 import httpx
@@ -15,6 +17,16 @@ _DEFAULT_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
+
+def _resolve_httpx_log_level() -> int:
+    raw = str(os.environ.get("REPORT_SOURCE_HTTPX_LOG_LEVEL", "")).strip().upper()
+    if not raw:
+        # Keep historical behavior: show per-request INFO logs by default.
+        return logging.INFO
+    return getattr(logging, raw, logging.INFO)
+
+
+logging.getLogger("httpx").setLevel(_resolve_httpx_log_level())
 
 
 class _LinkExtractor(HTMLParser):
@@ -46,9 +58,11 @@ def _extract_text(html: str) -> str:
 
 
 def _normalize_ddg_url(href: str) -> str:
-    href = href.strip()
+    href = unescape((href or "").strip())
     if not href:
         return ""
+    if href.startswith("//"):
+        href = f"https:{href}"
     if "duckduckgo.com/l/?" not in href:
         return href
     parsed = urlparse(href)
@@ -64,6 +78,16 @@ class ReportSourceFetcher:
         self.timeout_seconds = timeout_seconds
         self.max_html_chars = max_html_chars
         self.max_text_chars = max_text_chars
+        self.google_api_key = (
+            os.environ.get("REPORT_SOURCE_GOOGLE_API_KEY")
+            or os.environ.get("GOOGLE_SEARCH_API_KEY")
+            or ""
+        ).strip()
+        self.google_cx = (
+            os.environ.get("REPORT_SOURCE_GOOGLE_CX")
+            or os.environ.get("GOOGLE_SEARCH_CX")
+            or ""
+        ).strip()
         self._client = httpx.Client(
             timeout=timeout_seconds,
             follow_redirects=True,
@@ -107,31 +131,114 @@ class ReportSourceFetcher:
         )
 
     def search_candidates(self, query: str, limit: int = 10) -> List[str]:
+        target = max(1, int(limit))
+        merged: List[str] = []
+        seen = set()
+
+        # 1) Optional Google Programmable Search (higher precision if configured).
+        if self.google_api_key and self.google_cx:
+            for link in self._search_candidates_google(query=query, limit=min(10, max(target, 6))):
+                key = link.lower().rstrip("/")
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(link)
+                if len(merged) >= target:
+                    return merged
+
+        # 2) DuckDuckGo HTML endpoint as default/fallback.
+        for link in self._search_candidates_ddg(query=query, limit=max(target, 8)):
+            key = link.lower().rstrip("/")
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(link)
+            if len(merged) >= target:
+                break
+        return merged
+
+    def _search_candidates_ddg(self, query: str, limit: int = 10) -> List[str]:
         # DuckDuckGo HTML endpoint is a lightweight fallback and needs no API key.
-        search_url = f"https://duckduckgo.com/html/?q={quote_plus(query)}"
+        out: List[str] = []
+        seen = set()
+        search_urls = [
+            f"https://duckduckgo.com/html/?q={quote_plus(query)}",
+            f"https://html.duckduckgo.com/html/?q={quote_plus(query)}",
+        ]
+        for search_url in search_urls:
+            try:
+                res = self._client.get(search_url)
+            except Exception:
+                continue
+            if res.status_code >= 400:
+                continue
+
+            raw = res.text
+            hrefs = re.findall(r'href=["\']([^"\']+)["\']', raw, flags=re.IGNORECASE)
+            for href in hrefs:
+                link = _normalize_ddg_url(href)
+                if link.startswith("//"):
+                    link = f"https:{link}"
+                if not link or link.startswith("/"):
+                    continue
+                if not link.startswith("http"):
+                    continue
+                if "duckduckgo.com" in link:
+                    continue
+                key = link.lower().rstrip("/")
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(link)
+                if len(out) >= limit:
+                    return out
+        return out
+
+    def _search_candidates_google(self, query: str, limit: int = 10) -> List[str]:
+        if not self.google_api_key or not self.google_cx:
+            return []
+        url = "https://customsearch.googleapis.com/customsearch/v1"
+        params = {
+            "key": self.google_api_key,
+            "cx": self.google_cx,
+            "q": query,
+            "num": max(1, min(int(limit), 10)),
+            "safe": "off",
+        }
         try:
-            res = self._client.get(search_url)
+            res = self._client.get(url, params=params)
         except Exception:
             return []
         if res.status_code >= 400:
             return []
 
-        raw = res.text
-        hrefs = re.findall(r'href=["\']([^"\']+)["\']', raw, flags=re.IGNORECASE)
+        try:
+            data = res.json()
+        except Exception:
+            return []
+        if not isinstance(data, dict):
+            return []
 
         out: List[str] = []
         seen = set()
-        for href in hrefs:
-            link = _normalize_ddg_url(href)
-            if not link or link.startswith("/"):
+        items = data.get("items")
+        if not isinstance(items, list):
+            return out
+        for item in items:
+            if not isinstance(item, dict):
                 continue
-            if not link.startswith("http"):
+            link = str(item.get("link") or "").strip()
+            if not link or not link.startswith("http"):
                 continue
-            if "duckduckgo.com" in link:
+            host = (urlparse(link).hostname or "").lower()
+            if not host:
                 continue
-            if link in seen:
+            if host.endswith("google.com") or host.endswith("gstatic.com"):
                 continue
-            seen.add(link)
+            key = link.lower().rstrip("/")
+            if key in seen:
+                continue
+            seen.add(key)
             out.append(link)
             if len(out) >= limit:
                 break

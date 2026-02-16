@@ -50,6 +50,9 @@ financial_engine/
 | `VERTEX_PROJECT` | Vertex AI 项目 ID（未设时回退 `GOOGLE_CLOUD_PROJECT`） | `""` |
 | `VERTEX_LOCATION` | Vertex AI 区域 | `us-central1` |
 | `REPORT_SOURCE_AI_MODEL` | Vertex AI 复核模型 | `gemini-1.5-flash-002` |
+| `REPORT_SOURCE_GOOGLE_API_KEY` | （可选）Google Programmable Search API Key，用于补充候选 URL | `""` |
+| `REPORT_SOURCE_GOOGLE_CX` | （可选）Google Programmable Search Engine CX | `""` |
+| `REPORT_SOURCE_HTTPX_LOG_LEVEL` | `httpx` 日志级别（`INFO/WARNING/ERROR`）；默认 `INFO`（打印逐条请求） | `INFO` |
 
 > **建议**：生产环境通过 Cloud Run 的 `--set-env-vars` 或 Secret Manager 配置。
 
