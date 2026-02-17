@@ -172,6 +172,17 @@ docker run -p 8080:8080 \
 - `GET /report_source/catalog`  
   内置可视化目录页，可直接浏览、批量刷新、单条刷新（用于人工快速验收）。
 
+### 本地结果回灌到 GCS（给 StockFlow 直接使用）
+- 本地缓存文件位置：`GCP/financial_engine/data/*_report_source.json`
+- GCS 目标路径格式：`gs://<bucket>/<REPORT_SOURCE_PREFIX>/<TICKER>.json`（默认 `report_sources`）
+
+可先预览再上传：
+```bash
+cd GCP/financial_engine
+python scripts/sync_report_source_local_to_gcs.py --bucket <your-bucket> --dry-run
+python scripts/sync_report_source_local_to_gcs.py --bucket <your-bucket>
+```
+
 ---
 
 ## 快速验证（本地 + GCP 通用）

@@ -27,7 +27,8 @@ import logging
 import os
 import time
 from datetime import datetime, date
-from threading import Event, Lock
+from pathlib import Path
+from threading import Event, Lock, Thread
 from typing import Any, Dict, List, Optional, Union
 from urllib.error import URLError, HTTPError
 from urllib.parse import urlencode
@@ -1450,6 +1451,218 @@ def update_earnings_cache_job(tickers: List[str]) -> None:
 # -----------------------------
 scheduler: Optional[BackgroundScheduler] = None
 default_tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "AMD", "JPM", "V", "BRK-B", "WMT", "COST", "KO", "NKE", "LLY", "UNH", "CAT", "DIS", "NFLX"] # 默认关注的股票列表
+_REPORT_SOURCE_US_TICKERS_FILE = os.environ.get(
+    "REPORT_SOURCE_US_TICKERS_FILE",
+    str(Path(__file__).resolve().parents[2] / "AWS" / "ticker-manager" / "us_tickers.json"),
+)
+_REPORT_SOURCE_BATCH_STATE_FILE = os.environ.get(
+    "REPORT_SOURCE_BATCH_STATE_FILE",
+    str(Path(DATA_DIR) / "report_source_us_batch_state.json"),
+)
+_REPORT_SOURCE_BATCH_LOCK = Lock()
+_REPORT_SOURCE_BATCH_THREAD: Optional[Thread] = None
+_REPORT_SOURCE_BATCH_STATE: Dict[str, Any] = {
+    "running": False,
+    "ticker_file": _REPORT_SOURCE_US_TICKERS_FILE,
+    "force_refresh": False,
+    "total": 0,
+    "start_index": 0,
+    "resume_from_cached": False,
+    "processed": 0,
+    "success": 0,
+    "failed": 0,
+    "last_ticker": "",
+    "last_status": "",
+    "last_error": "",
+    "started_at": "",
+    "finished_at": "",
+    "updated_at": "",
+}
+
+
+def _persist_report_source_batch_state(snapshot: Optional[Dict[str, Any]] = None) -> None:
+    try:
+        state_path = Path(_REPORT_SOURCE_BATCH_STATE_FILE).resolve()
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        if snapshot is None:
+            with _REPORT_SOURCE_BATCH_LOCK:
+                snapshot = dict(_REPORT_SOURCE_BATCH_STATE)
+        tmp_path = state_path.with_suffix(state_path.suffix + ".tmp")
+        with tmp_path.open("w", encoding="utf-8") as f:
+            json.dump(snapshot, f, ensure_ascii=False, indent=2)
+        tmp_path.replace(state_path)
+    except Exception as exc:
+        logger.warning("failed to persist report source batch state: %s", exc)
+
+
+def _hydrate_report_source_batch_state() -> None:
+    state_path = Path(_REPORT_SOURCE_BATCH_STATE_FILE).resolve()
+    if not state_path.exists():
+        return
+    try:
+        with state_path.open("r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            return
+
+        with _REPORT_SOURCE_BATCH_LOCK:
+            for key in list(_REPORT_SOURCE_BATCH_STATE.keys()):
+                if key in raw:
+                    _REPORT_SOURCE_BATCH_STATE[key] = raw.get(key)
+            # A restarted process cannot have a live worker thread.
+            if bool(_REPORT_SOURCE_BATCH_STATE.get("running")):
+                _REPORT_SOURCE_BATCH_STATE["running"] = False
+                if not _REPORT_SOURCE_BATCH_STATE.get("finished_at"):
+                    _REPORT_SOURCE_BATCH_STATE["finished_at"] = datetime.utcnow().isoformat() + "Z"
+                _REPORT_SOURCE_BATCH_STATE["last_error"] = "interrupted_by_restart"
+                _REPORT_SOURCE_BATCH_STATE["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        _persist_report_source_batch_state()
+    except Exception as exc:
+        logger.warning("failed to hydrate report source batch state: %s", exc)
+
+
+def _update_report_source_batch_state(**updates: Any) -> Dict[str, Any]:
+    with _REPORT_SOURCE_BATCH_LOCK:
+        _REPORT_SOURCE_BATCH_STATE.update(updates)
+        snap = dict(_REPORT_SOURCE_BATCH_STATE)
+    _persist_report_source_batch_state(snap)
+    return snap
+
+
+_hydrate_report_source_batch_state()
+
+
+def _load_report_source_us_tickers() -> List[str]:
+    path = Path(_REPORT_SOURCE_US_TICKERS_FILE).resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"ticker file not found: {path}")
+    with path.open("r", encoding="utf-8") as f:
+        raw = json.load(f)
+    if not isinstance(raw, list):
+        raise ValueError(f"ticker file must be a JSON list: {path}")
+
+    out: List[str] = []
+    seen = set()
+    for item in raw:
+        t = str(item or "").strip().upper()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
+def _collect_cached_report_source_tickers() -> set[str]:
+    cached: set[str] = set()
+
+    # Local cache files.
+    try:
+        for name in os.listdir(DATA_DIR):
+            if not name.endswith("_report_source.json"):
+                continue
+            ticker = name.replace("_report_source.json", "").upper()
+            if ticker:
+                cached.add(ticker)
+    except Exception:
+        pass
+
+    # GCS cache objects (best effort).
+    if GCS_BUCKET_NAME:
+        try:
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(GCS_BUCKET_NAME)
+            prefix = f"{REPORT_SOURCE_PREFIX.strip().strip('/')}/"
+            for blob in bucket.list_blobs(prefix=prefix):
+                name = os.path.basename(str(blob.name or ""))
+                if not name.endswith(".json"):
+                    continue
+                ticker = name[:-5].upper()
+                if ticker:
+                    cached.add(ticker)
+        except Exception:
+            # Ignore GCS scan failure; local cache still works.
+            pass
+
+    return cached
+
+
+def _find_report_source_resume_index_from_cache(
+    tickers: List[str],
+    cached: Optional[set[str]] = None,
+) -> int:
+    if not tickers:
+        return 0
+    if cached is None:
+        cached = _collect_cached_report_source_tickers()
+    for idx, ticker in enumerate(tickers):
+        if str(ticker).upper() not in cached:
+            return idx
+    return len(tickers)
+
+
+def _snapshot_report_source_batch_state() -> Dict[str, Any]:
+    with _REPORT_SOURCE_BATCH_LOCK:
+        return dict(_REPORT_SOURCE_BATCH_STATE)
+
+
+def _run_report_source_us_batch(tickers: List[str], force_refresh: bool, start_index_base: int = 0) -> None:
+    global _REPORT_SOURCE_BATCH_THREAD
+    service = ReportSourceService(
+        bucket_name=GCS_BUCKET_NAME,
+        local_data_dir=DATA_DIR,
+        prefix=REPORT_SOURCE_PREFIX,
+        cache_ttl_seconds=REPORT_SOURCE_CACHE_TTL_SECONDS,
+        max_candidates=REPORT_SOURCE_MAX_CANDIDATES,
+    )
+    total = len(tickers)
+    logger.info("report_source us batch started: total=%d force_refresh=%s", total, force_refresh)
+
+    try:
+        for idx, ticker in enumerate(tickers, start=1):
+            try:
+                payload = service.resolve(ticker, force_refresh=force_refresh)
+                status = str(payload.get("verification_status") or "")
+                with _REPORT_SOURCE_BATCH_LOCK:
+                    success = int(_REPORT_SOURCE_BATCH_STATE.get("success") or 0) + 1
+                _update_report_source_batch_state(
+                    processed=start_index_base + idx,
+                    success=success,
+                    last_ticker=ticker,
+                    last_status=status,
+                    last_error="",
+                    updated_at=datetime.utcnow().isoformat() + "Z",
+                )
+            except Exception as exc:
+                err = f"{type(exc).__name__}: {exc}"
+                logger.error("report_source us batch failed ticker=%s error=%s", ticker, err)
+                with _REPORT_SOURCE_BATCH_LOCK:
+                    failed = int(_REPORT_SOURCE_BATCH_STATE.get("failed") or 0) + 1
+                _update_report_source_batch_state(
+                    processed=start_index_base + idx,
+                    failed=failed,
+                    last_ticker=ticker,
+                    last_status="error",
+                    last_error=err,
+                    updated_at=datetime.utcnow().isoformat() + "Z",
+                )
+    finally:
+        try:
+            service.fetcher.close()
+        except Exception:
+            pass
+        _update_report_source_batch_state(
+            running=False,
+            finished_at=datetime.utcnow().isoformat() + "Z",
+            updated_at=datetime.utcnow().isoformat() + "Z",
+        )
+        with _REPORT_SOURCE_BATCH_LOCK:
+            _REPORT_SOURCE_BATCH_THREAD = None
+        logger.info(
+            "report_source us batch finished: processed=%s success=%s failed=%s",
+            _REPORT_SOURCE_BATCH_STATE.get("processed"),
+            _REPORT_SOURCE_BATCH_STATE.get("success"),
+            _REPORT_SOURCE_BATCH_STATE.get("failed"),
+        )
 
 @app.on_event("startup")
 # --- FastAPI 生命周期：启动时先跑一轮默认列表，并启动定时任务 ---
@@ -1720,6 +1933,160 @@ async def batch_refresh_report_source(payload: ReportSourceBatchRequest) -> Dict
     return await asyncio.to_thread(service.resolve_batch, tickers, bool(payload.force_refresh))
 
 
+@app.post("/stockflow/report_source/batch/us_tickers/start", summary="后台启动 us_tickers.json 全量财报官网来源解析")
+async def start_report_source_us_batch(
+    force_refresh: int = Query(0, ge=0, le=1, description="是否强制刷新所有 ticker"),
+    start_index: int = Query(0, ge=0, description="从 us_tickers.json 的第几个开始（0-based）"),
+    resume_from_cached: int = Query(0, ge=0, le=1, description="是否自动从首个未缓存 ticker 续跑"),
+    max_count: int = Query(0, ge=0, le=5000, description="本次最多跑多少个，0 表示全部"),
+) -> Dict[str, Any]:
+    global _REPORT_SOURCE_BATCH_THREAD
+
+    with _REPORT_SOURCE_BATCH_LOCK:
+        if bool(_REPORT_SOURCE_BATCH_STATE.get("running")):
+            return {
+                "started": False,
+                "message": "batch already running",
+                "state": dict(_REPORT_SOURCE_BATCH_STATE),
+            }
+
+    try:
+        all_tickers = _load_report_source_us_tickers()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to load us_tickers: {exc}")
+
+    total_all = len(all_tickers)
+    if start_index >= total_all and total_all > 0:
+        raise HTTPException(status_code=400, detail=f"start_index out of range: {start_index} >= {total_all}")
+
+    effective_start_index = start_index
+    if bool(resume_from_cached) and not bool(force_refresh):
+        cached_tickers = _collect_cached_report_source_tickers()
+        cache_resume_index = _find_report_source_resume_index_from_cache(all_tickers, cached_tickers)
+        effective_start_index = max(effective_start_index, cache_resume_index)
+        logger.info(
+            "report_source us batch resume_from_cached=true cached=%d resume_index=%d start_index=%d effective_start=%d",
+            len(cached_tickers),
+            cache_resume_index,
+            start_index,
+            effective_start_index,
+        )
+
+    if effective_start_index > total_all:
+        effective_start_index = total_all
+
+    tickers = all_tickers[effective_start_index:]
+    if max_count > 0:
+        tickers = tickers[:max_count]
+    if not tickers:
+        prev_state = _snapshot_report_source_batch_state()
+        now_iso = datetime.utcnow().isoformat() + "Z"
+        state = _update_report_source_batch_state(
+            running=False,
+            ticker_file=str(Path(_REPORT_SOURCE_US_TICKERS_FILE).resolve()),
+            force_refresh=bool(force_refresh),
+            total=total_all,
+            start_index=effective_start_index,
+            resume_from_cached=bool(resume_from_cached),
+            processed=effective_start_index,
+            success=int(prev_state.get("success") or 0),
+            failed=int(prev_state.get("failed") or 0),
+            last_ticker="",
+            last_status="all_cached_or_completed",
+            last_error="",
+            started_at=now_iso,
+            finished_at=now_iso,
+            updated_at=now_iso,
+        )
+        return {
+            "started": False,
+            "message": f"nothing to process (start_index={effective_start_index}, total={total_all})",
+            "state": state,
+        }
+
+    target_total = effective_start_index + len(tickers)
+
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    _update_report_source_batch_state(
+        running=True,
+        ticker_file=str(Path(_REPORT_SOURCE_US_TICKERS_FILE).resolve()),
+        force_refresh=bool(force_refresh),
+        total=target_total,
+        start_index=effective_start_index,
+        resume_from_cached=bool(resume_from_cached),
+        processed=effective_start_index,
+        success=0,
+        failed=0,
+        last_ticker="",
+        last_status="",
+        last_error="",
+        started_at=now_iso,
+        finished_at="",
+        updated_at=now_iso,
+    )
+    with _REPORT_SOURCE_BATCH_LOCK:
+        worker = Thread(
+            target=_run_report_source_us_batch,
+            args=(tickers, bool(force_refresh), effective_start_index),
+            daemon=True,
+            name="report-source-us-batch",
+        )
+        _REPORT_SOURCE_BATCH_THREAD = worker
+        worker.start()
+
+    return {
+        "started": True,
+        "message": (
+            f"started background batch for {len(tickers)} tickers "
+            f"(start_index={effective_start_index}, target_total={target_total})"
+        ),
+        "state": _snapshot_report_source_batch_state(),
+    }
+
+
+@app.get("/stockflow/report_source/batch/us_tickers/resume_hint", summary="基于缓存推断 us_tickers 的续跑起点")
+async def get_report_source_us_batch_resume_hint() -> Dict[str, Any]:
+    try:
+        all_tickers = _load_report_source_us_tickers()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to load us_tickers: {exc}")
+
+    cached = _collect_cached_report_source_tickers()
+    first_uncached_index = _find_report_source_resume_index_from_cache(all_tickers, cached)
+    first_uncached_ticker = all_tickers[first_uncached_index] if first_uncached_index < len(all_tickers) else ""
+
+    return {
+        "total": len(all_tickers),
+        "cached_count": len(cached),
+        "first_uncached_index": first_uncached_index,
+        "first_uncached_ticker": first_uncached_ticker,
+        "all_cached": first_uncached_index >= len(all_tickers),
+    }
+
+
+@app.get("/stockflow/report_source/batch/us_tickers/status", summary="查询 us_tickers 全量解析任务状态")
+async def get_report_source_us_batch_status() -> Dict[str, Any]:
+    global _REPORT_SOURCE_BATCH_THREAD
+    with _REPORT_SOURCE_BATCH_LOCK:
+        state = dict(_REPORT_SOURCE_BATCH_STATE)
+        worker = _REPORT_SOURCE_BATCH_THREAD
+
+    thread_alive = bool(worker is not None and worker.is_alive())
+    if bool(state.get("running")) and not thread_alive:
+        if bool(_snapshot_report_source_batch_state().get("running")):
+            finished_at = _snapshot_report_source_batch_state().get("finished_at") or (datetime.utcnow().isoformat() + "Z")
+            state = _update_report_source_batch_state(
+                running=False,
+                finished_at=finished_at,
+                updated_at=datetime.utcnow().isoformat() + "Z",
+            )
+        else:
+            state = _snapshot_report_source_batch_state()
+
+    state["thread_alive"] = thread_alive
+    return state
+
+
 @app.get("/stockflow/report_source/catalog/list", summary="获取已缓存的财报官网来源目录")
 async def list_report_source_catalog(
     limit: int = Query(500, ge=1, le=2000, description="最大返回条数"),
@@ -1775,9 +2142,14 @@ async def report_source_catalog_page() -> HTMLResponse:
           <button id="loadCached">Load Cached Directory</button>
           <button id="loadSample" class="alt">Use Sample 20</button>
           <button id="resolveInput" class="warn">Resolve Input Tickers</button>
+          <button id="runUsBatch" class="warn">Run US Tickers (All)</button>
+          <button id="resumeUsBatch" class="alt">Resume</button>
+          <button id="checkUsBatch" class="alt">Batch Status</button>
+          <button id="toggleAutoRefresh" class="alt">Auto Refresh: Off</button>
         </div>
         <textarea id="tickers" placeholder="Comma/space separated tickers, e.g. AAPL, MSFT, NVDA">{default_list}</textarea>
         <div class="meta" id="meta">Ready.</div>
+        <div class="meta" id="batchMeta">US batch idle.</div>
       </div>
     </div>
 
@@ -1805,8 +2177,17 @@ async def report_source_catalog_page() -> HTMLResponse:
     const prefixEl = document.getElementById("prefix");
     const tickersEl = document.getElementById("tickers");
     const resolveInputBtn = document.getElementById("resolveInput");
+    const runUsBatchBtn = document.getElementById("runUsBatch");
+    const resumeUsBatchBtn = document.getElementById("resumeUsBatch");
+    const checkUsBatchBtn = document.getElementById("checkUsBatch");
+    const autoRefreshBtn = document.getElementById("toggleAutoRefresh");
+    const batchMeta = document.getElementById("batchMeta");
     let currentItems = [];
     let isResolving = false;
+    let isUsBatchRunning = false;
+    let lastUsBatchState = {{}};
+    let autoRefreshTimer = null;
+    const autoRefreshMs = 5000;
 
     function parseTickers(raw) {{
       return Array.from(new Set(
@@ -1887,11 +2268,206 @@ async def report_source_catalog_page() -> HTMLResponse:
       rowsEl.innerHTML = currentItems.map(rowHtml).join("");
     }}
 
-    async function loadCached() {{
+    function setAutoRefreshEnabled(enabled) {{
+      if (enabled) {{
+        if (autoRefreshTimer) return;
+        autoRefreshTimer = setInterval(() => {{
+          if (!isResolving) loadCached(true);
+          loadUsBatchStatus(true);
+        }}, autoRefreshMs);
+        autoRefreshBtn.textContent = "Auto Refresh: On";
+      }} else {{
+        if (autoRefreshTimer) {{
+          clearInterval(autoRefreshTimer);
+          autoRefreshTimer = null;
+        }}
+        autoRefreshBtn.textContent = "Auto Refresh: Off";
+      }}
+    }}
+
+    function renderUsBatchState(state) {{
+      const s = (state && typeof state === "object") ? state : {{}};
+      lastUsBatchState = s;
+      isUsBatchRunning = Boolean(s.running);
+
+      const total = Number(s.total || 0);
+      const processed = Number(s.processed || 0);
+      const success = Number(s.success || 0);
+      const failed = Number(s.failed || 0);
+      const startedAt = String(s.started_at || "");
+      const finishedAt = String(s.finished_at || "");
+      const lastTicker = String(s.last_ticker || "");
+      const lastStatus = String(s.last_status || "");
+      const lastError = String(s.last_error || "");
+      const pct = total > 0 ? ((processed / total) * 100).toFixed(1) : "0.0";
+
+      runUsBatchBtn.disabled = isResolving || isUsBatchRunning;
+      resumeUsBatchBtn.disabled = isResolving || isUsBatchRunning;
+
+      if (isUsBatchRunning) {{
+        batchMeta.textContent = `US batch running: ${{processed}}/${{total}} (${{pct}}%) | success ${{success}}, failed ${{failed}} | last: ${{lastTicker || "-"}} ${{lastStatus || ""}}`;
+      }} else if (total > 0 && startedAt) {{
+        batchMeta.textContent = `US batch finished: ${{processed}}/${{total}} | success ${{success}}, failed ${{failed}} | started ${{startedAt}}${{finishedAt ? ` | finished ${{finishedAt}}` : ""}}${{lastError ? ` | last error: ${{lastError}}` : ""}}`;
+      }} else {{
+        batchMeta.textContent = "US batch idle.";
+      }}
+    }}
+
+    async function loadUsBatchStatus(silent = false) {{
+      try {{
+        const res = await fetch("/stockflow/report_source/batch/us_tickers/status");
+        const data = await res.json();
+        if (!res.ok) {{
+          throw new Error(String(data.detail || `HTTP ${{res.status}}`));
+        }}
+        renderUsBatchState(data);
+        if (!silent && data.running) {{
+          meta.textContent = `US batch is running: ${{Number(data.processed || 0)}}/${{Number(data.total || 0)}}`;
+        }}
+      }} catch (err) {{
+        if (!silent) {{
+          batchMeta.textContent = `US batch status failed: ${{String(err && err.message ? err.message : err)}}`;
+        }}
+      }}
+    }}
+
+    async function runUsBatch() {{
+      if (isResolving) {{
+        meta.textContent = "Please wait for current resolve to finish.";
+        return;
+      }}
+      if (isUsBatchRunning) {{
+        meta.textContent = "US batch already running.";
+        await loadUsBatchStatus(false);
+        return;
+      }}
+      if (!window.confirm("Start background resolve for all tickers from us_tickers.json?")) {{
+        return;
+      }}
+
+      runUsBatchBtn.disabled = true;
+      resumeUsBatchBtn.disabled = true;
+      try {{
+        const res = await fetch("/stockflow/report_source/batch/us_tickers/start?force_refresh=0", {{
+          method: "POST",
+        }});
+        const data = await res.json();
+        if (!res.ok) {{
+          throw new Error(String(data.detail || `HTTP ${{res.status}}`));
+        }}
+        renderUsBatchState(data.state || {{}});
+        meta.textContent = String(data.message || "US batch started.");
+        setAutoRefreshEnabled(true);
+        await loadCached(true);
+        await loadUsBatchStatus(true);
+      }} catch (err) {{
+        meta.textContent = `Start US batch failed: ${{String(err && err.message ? err.message : err)}}`;
+      }} finally {{
+        if (!isUsBatchRunning) {{
+          runUsBatchBtn.disabled = isResolving;
+          resumeUsBatchBtn.disabled = isResolving;
+        }}
+      }}
+    }}
+
+    async function resumeUsBatch() {{
+      if (isResolving) {{
+        meta.textContent = "Please wait for current resolve to finish.";
+        return;
+      }}
+
+      await loadUsBatchStatus(true);
+      if (isUsBatchRunning) {{
+        meta.textContent = "US batch already running.";
+        return;
+      }}
+
+      const s = (lastUsBatchState && typeof lastUsBatchState === "object") ? lastUsBatchState : {{}};
+      const total = Math.max(0, Number(s.total || 0));
+      const processed = Math.max(0, Number(s.processed || 0));
+      let startIndex = Number.isFinite(processed) ? Math.floor(processed) : 0;
+      const noPersistedProgress = total === 0 && startIndex === 0;
+      let resumeHint = null;
+      let resumeHintError = "";
+
+      if (noPersistedProgress) {{
+        try {{
+          const hintRes = await fetch("/stockflow/report_source/batch/us_tickers/resume_hint");
+          const hintData = await hintRes.json();
+          if (hintRes.ok && hintData && typeof hintData === "object") {{
+            resumeHint = hintData;
+            const hinted = Math.max(0, Number(hintData.first_uncached_index || 0));
+            if (Number.isFinite(hinted)) {{
+              startIndex = Math.max(startIndex, Math.floor(hinted));
+            }}
+          }} else {{
+            resumeHintError = String((hintData && hintData.detail) || `HTTP ${{hintRes.status}}`);
+          }}
+        }} catch (err) {{
+          resumeHintError = String(err && err.message ? err.message : err);
+        }}
+      }}
+
+      if (noPersistedProgress && !resumeHint && resumeHintError) {{
+        meta.textContent = `Resume hint unavailable: ${{resumeHintError}}. Falling back to first uncached estimation at start.`;
+      }}
+
+      if (total > 0 && startIndex >= total) {{
+        meta.textContent = `US batch already complete (${{processed}}/${{total}}). Nothing to resume.`;
+        return;
+      }}
+
+      if (noPersistedProgress && resumeHint) {{
+        const hintTotal = Math.max(0, Number(resumeHint.total || 0));
+        if (hintTotal > 0 && startIndex >= hintTotal) {{
+          meta.textContent = `All us_tickers appear cached (${{hintTotal}}). Nothing to resume.`;
+          return;
+        }}
+      }}
+
+      const tip = noPersistedProgress
+        ? resumeHint
+          ? `No persisted batch progress found. Cached detected ${{Number(resumeHint.cached_count || 0)}}/${{Number(resumeHint.total || 0)}}. Resume from index ${{startIndex}}${{resumeHint.first_uncached_ticker ? ` (${{resumeHint.first_uncached_ticker}})` : ""}}?`
+          : "No persisted batch progress found. Resume will start from first uncached ticker. Continue?"
+        : total > 0
+        ? `Resume background resolve from index ${{startIndex}} (${{processed}}/${{total}} processed)?`
+        : `Resume background resolve from index ${{startIndex}}?`;
+      if (!window.confirm(tip)) {{
+        return;
+      }}
+
+      runUsBatchBtn.disabled = true;
+      resumeUsBatchBtn.disabled = true;
+      try {{
+        const res = await fetch(`/stockflow/report_source/batch/us_tickers/start?force_refresh=0&resume_from_cached=1&start_index=${{startIndex}}`, {{
+          method: "POST",
+        }});
+        const data = await res.json();
+        if (!res.ok) {{
+          throw new Error(String(data.detail || `HTTP ${{res.status}}`));
+        }}
+        renderUsBatchState(data.state || {{}});
+        meta.textContent = String(data.message || `US batch resumed from index ${{startIndex}}.`);
+        setAutoRefreshEnabled(true);
+        await loadCached(true);
+        await loadUsBatchStatus(true);
+      }} catch (err) {{
+        meta.textContent = `Resume US batch failed: ${{String(err && err.message ? err.message : err)}}`;
+      }} finally {{
+        if (!isUsBatchRunning) {{
+          runUsBatchBtn.disabled = isResolving;
+          resumeUsBatchBtn.disabled = isResolving;
+        }}
+      }}
+    }}
+
+    async function loadCached(silent = false) {{
       const limit = Math.max(1, Math.min(2000, Number(limitEl.value || 500)));
       const prefix = encodeURIComponent(prefixEl.value || "");
       try {{
-        meta.textContent = "Loading cached directory...";
+        if (!silent) {{
+          meta.textContent = "Loading cached directory...";
+        }}
         const res = await fetch(`/stockflow/report_source/catalog/list?limit=${{limit}}&ticker_prefix=${{prefix}}`);
         const data = await res.json();
         if (!res.ok) {{
@@ -1899,7 +2475,8 @@ async def report_source_catalog_page() -> HTMLResponse:
         }}
         const items = Array.isArray(data.items) ? data.items : [];
         render(items);
-        meta.textContent = `Loaded ${{items.length}} records (cached).`;
+        const at = new Date().toLocaleTimeString();
+        meta.textContent = `Loaded ${{items.length}} records (cached) at ${{at}}${{silent ? " [auto]" : ""}}.`;
       }} catch (err) {{
         meta.textContent = `Load cached failed: ${{String(err && err.message ? err.message : err)}}`;
       }}
@@ -1917,6 +2494,8 @@ async def report_source_catalog_page() -> HTMLResponse:
       }}
       isResolving = true;
       resolveInputBtn.disabled = true;
+      runUsBatchBtn.disabled = true;
+      resumeUsBatchBtn.disabled = true;
       currentItems = [];
       rowsEl.innerHTML = "";
 
@@ -1950,6 +2529,8 @@ async def report_source_catalog_page() -> HTMLResponse:
       }} finally {{
         isResolving = false;
         resolveInputBtn.disabled = false;
+        runUsBatchBtn.disabled = isUsBatchRunning;
+        resumeUsBatchBtn.disabled = isUsBatchRunning;
       }}
       meta.textContent = `Resolved ${{success}} / ${{tickers.length}} tickers, failed ${{failed}}.`;
     }}
@@ -1976,11 +2557,23 @@ async def report_source_catalog_page() -> HTMLResponse:
 
     document.getElementById("loadCached").addEventListener("click", loadCached);
     document.getElementById("resolveInput").addEventListener("click", resolveInput);
+    runUsBatchBtn.addEventListener("click", runUsBatch);
+    resumeUsBatchBtn.addEventListener("click", resumeUsBatch);
+    checkUsBatchBtn.addEventListener("click", () => loadUsBatchStatus(false));
     document.getElementById("loadSample").addEventListener("click", () => {{
       tickersEl.value = "{default_list}";
     }});
+    autoRefreshBtn.addEventListener("click", () => {{
+      setAutoRefreshEnabled(!autoRefreshTimer);
+      if (autoRefreshTimer) {{
+        loadCached(true);
+        loadUsBatchStatus(true);
+      }}
+    }});
+    window.addEventListener("beforeunload", () => setAutoRefreshEnabled(false));
 
     loadCached();
+    loadUsBatchStatus(true);
   </script>
 </body>
 </html>
