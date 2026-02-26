@@ -2079,9 +2079,10 @@ async def report_source_pipeline_monitor_page(
           const ticker = String(evt && evt.ticker ? evt.ticker : "");
           const docType = String(evt && evt.doc_type ? evt.doc_type : "");
           const lane = String(evt && evt.lane ? evt.lane : "");
+          const via = String(evt && evt.fetch_via ? evt.fetch_via : "");
           const discovered = evt && evt.discovered != null ? ` discovered=${evt.discovered}` : "";
           const updated = evt && evt.updated != null ? ` updated=${evt.updated}` : "";
-          return `<li><span class="mono">${esc(at)}</span> | <strong>${esc(type)}</strong>${ticker ? ` | ${esc(ticker)}` : ""}${docType ? ` | ${esc(docType)}` : ""}${lane ? ` | ${esc(lane)}` : ""}${discovered}${updated}</li>`;
+          return `<li><span class="mono">${esc(at)}</span> | <strong>${esc(type)}</strong>${ticker ? ` | ${esc(ticker)}` : ""}${docType ? ` | ${esc(docType)}` : ""}${lane ? ` | ${esc(lane)}` : ""}${via ? ` | via=${esc(via)}` : ""}${discovered}${updated}</li>`;
         }).join("");
       }
     }
@@ -2110,7 +2111,7 @@ async def report_source_pipeline_monitor_page(
           ? `<a class="btn btn-act-view" href="/stockflow/report_source/docs/queue/analysis/${encodeURIComponent(docId)}" target="_blank" rel="noopener">View Analysis</a>`
           : `<button class="btn is-disabled" type="button" disabled title="尚未生成 analysis">View Analysis</button>`;
         const rawLink = hasRaw
-          ? `<a class="btn btn-act-raw" href="/stockflow/report_source/docs/queue/raw/${encodeURIComponent(docId)}?download=1" target="_blank" rel="noopener">View Raw</a>`
+          ? `<a class="btn btn-act-raw" href="/report_source/raw_preview?doc_id=${encodeURIComponent(docId)}" target="_blank" rel="noopener">Raw Preview</a>`
           : `<button class="btn is-disabled" type="button" disabled title="尚未落盘 raw 文件">View Raw</button>`;
         const sourceLink = sourceUrl
           ? `<a class="btn btn-act-source" href="${esc(sourceUrl)}" target="_blank" rel="noopener">Open Source</a>`
@@ -2121,6 +2122,37 @@ async def report_source_pipeline_monitor_page(
           briefParts.push(`source=${item.source_kind}`);
           detailLines.push(`source_kind: ${item.source_kind}`);
         }
+        if (item && item.fetch_via) {
+          briefParts.push(`via=${item.fetch_via}`);
+          detailLines.push(`fetch_via: ${item.fetch_via}`);
+        }
+        if (item && item.parent_doc_id) {
+          briefParts.push(`parent=${String(item.parent_doc_id).slice(0, 8)}`);
+          detailLines.push(`parent_doc_id: ${item.parent_doc_id}`);
+        }
+        if (item && (item.child_discovered != null || item.child_updated != null || item.child_candidates != null)) {
+          const discovered = Number(item.child_discovered || 0);
+          const updated = Number(item.child_updated || 0);
+          const accepted = Number(item.child_candidates || 0);
+          briefParts.push(`child d/u=${discovered}/${updated}`);
+          detailLines.push(`child_candidates: ${accepted}`);
+          detailLines.push(`child_discovered: ${discovered}`);
+          detailLines.push(`child_updated: ${updated}`);
+          if (item.q4_feed_accepted != null || item.q4_reports_selected != null) {
+            const q4Accepted = Number(item.q4_feed_accepted || 0);
+            const q4Reports = Number(item.q4_reports_selected || 0);
+            briefParts.push(`q4=${q4Accepted}/${q4Reports}`);
+            detailLines.push(`q4_feed_accepted: ${q4Accepted}`);
+            detailLines.push(`q4_reports_selected: ${q4Reports}`);
+          }
+        }
+        if (item && item.q4_report_title) {
+          briefParts.push(`latest=${String(item.q4_report_title).slice(0, 36)}`);
+          detailLines.push(`q4_report_title: ${item.q4_report_title}`);
+        }
+        if (item && item.q4_doc_title) detailLines.push(`q4_doc_title: ${item.q4_doc_title}`);
+        if (item && item.q4_doc_category) detailLines.push(`q4_doc_category: ${item.q4_doc_category}`);
+        if (item && item.q4_fetch_via) detailLines.push(`q4_fetch_via: ${item.q4_fetch_via}`);
         if (item && item.last_error) {
           briefParts.push(`error=${item.last_error.replace(/^RuntimeError:\\s*/i, "")}`);
           detailLines.push(`last_error: ${item.last_error}`);
@@ -2392,6 +2424,265 @@ async def report_source_pipeline_monitor_page(
     html = html.replace("__DEFAULT_TICKER_JSON__", default_ticker_json)
     html = html.replace("__DEFAULT_STATUS_JSON__", default_status_json)
     html = html.replace("__DEFAULT_LIMIT_JSON__", default_limit_json)
+    return HTMLResponse(content=html)
+
+
+@router.get("/report_source/raw_preview", summary="原始文档预览页", response_class=HTMLResponse)
+async def report_source_raw_preview_page(
+    doc_id: str = Query("", description="队列文档 ID"),
+) -> HTMLResponse:
+    normalized_doc_id = str(doc_id or "").strip()
+    default_doc_id_json = json.dumps(normalized_doc_id)
+    html = """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Raw Preview</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --card: #ffffff;
+      --line: #dbe3ef;
+      --text: #0f172a;
+      --muted: #475569;
+      --blue: #2563eb;
+      --green: #059669;
+      --orange: #d97706;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .wrap {
+      max-width: 1040px;
+      margin: 24px auto 36px;
+      padding: 0 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, .05);
+      margin-bottom: 12px;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 24px;
+    }
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    input {
+      border: 1px solid #cbd5e1;
+      border-radius: 9px;
+      padding: 8px 10px;
+      min-width: 280px;
+      font-size: 13px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 34px;
+      padding: 7px 10px;
+      border-radius: 9px;
+      border: 1px solid transparent;
+      color: #fff;
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .btn-primary { background: var(--blue); border-color: #1d4ed8; }
+    .btn-secondary { background: var(--green); border-color: #047857; }
+    .btn-warn { background: var(--orange); border-color: #b45309; }
+    .btn-soft {
+      color: #1e293b;
+      background: #eef4ff;
+      border-color: #c7d8f7;
+    }
+    .btn[disabled] {
+      background: #e5e7eb;
+      border-color: #cbd5e1;
+      color: #94a3b8;
+      cursor: not-allowed;
+    }
+    .meta {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #64748b;
+      min-height: 1.2em;
+      white-space: pre-wrap;
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: 6px 10px;
+      align-items: baseline;
+      font-size: 13px;
+    }
+    .k { color: #64748b; font-weight: 700; }
+    .v { color: #0f172a; overflow-wrap: anywhere; word-break: break-word; }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+    }
+    pre {
+      margin: 0;
+      border: 1px solid #dbe3ef;
+      border-radius: 10px;
+      background: #f8fafc;
+      padding: 10px;
+      max-height: 68vh;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.35;
+      font-size: 12px;
+    }
+    @media (max-width: 740px) {
+      .kv { grid-template-columns: 1fr; }
+      input { min-width: 220px; width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Raw Preview</h1>
+      <div class="toolbar">
+        <input id="docIdInput" placeholder="doc_id" />
+        <button class="btn btn-primary" id="loadBtn" type="button">Load</button>
+        <a class="btn btn-soft" id="openMonitorBtn" href="/report_source/pipeline_monitor" target="_blank" rel="noopener">Open Monitor</a>
+        <a class="btn btn-secondary" id="analysisBtn" href="#" target="_blank" rel="noopener">View Analysis</a>
+        <a class="btn btn-warn" id="sourceBtn" href="#" target="_blank" rel="noopener">Open Source</a>
+        <a class="btn btn-primary" id="downloadBtn" href="#" target="_blank" rel="noopener">Download Raw</a>
+      </div>
+      <div class="meta" id="meta">Ready.</div>
+    </div>
+
+    <div class="card">
+      <div class="kv" id="metaKv"></div>
+    </div>
+
+    <div class="card">
+      <pre id="preview">(empty)</pre>
+    </div>
+  </div>
+
+  <script>
+    const DEFAULT_DOC_ID = __DEFAULT_DOC_ID_JSON__;
+    const docIdInput = document.getElementById("docIdInput");
+    const loadBtn = document.getElementById("loadBtn");
+    const meta = document.getElementById("meta");
+    const metaKv = document.getElementById("metaKv");
+    const preview = document.getElementById("preview");
+    const openMonitorBtn = document.getElementById("openMonitorBtn");
+    const analysisBtn = document.getElementById("analysisBtn");
+    const sourceBtn = document.getElementById("sourceBtn");
+    const downloadBtn = document.getElementById("downloadBtn");
+
+    function esc(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    function normalizeDocId(raw) {
+      return String(raw || "").trim();
+    }
+
+    async function fetchJson(url) {
+      const res = await fetch(url);
+      let data = null;
+      try {
+        data = await res.json();
+      } catch (err) {
+        data = null;
+      }
+      if (!res.ok) {
+        const detail = data && typeof data === "object" ? (data.detail || data.message || JSON.stringify(data)) : `HTTP ${res.status}`;
+        throw new Error(String(detail));
+      }
+      return data;
+    }
+
+    function setActionLinks(docId, item) {
+      const safeDocId = encodeURIComponent(docId);
+      openMonitorBtn.href = `/report_source/pipeline_monitor?ticker=${encodeURIComponent(String(item && item.ticker ? item.ticker : ""))}`;
+      analysisBtn.href = `/stockflow/report_source/docs/queue/analysis/${safeDocId}`;
+      downloadBtn.href = `/stockflow/report_source/docs/queue/raw/${safeDocId}?download=1`;
+      sourceBtn.href = String(item && item.url ? item.url : "#");
+      analysisBtn.style.pointerEvents = item && item.analysis_path ? "auto" : "none";
+      analysisBtn.style.opacity = item && item.analysis_path ? "1" : ".45";
+      sourceBtn.style.pointerEvents = item && item.url ? "auto" : "none";
+      sourceBtn.style.opacity = item && item.url ? "1" : ".45";
+    }
+
+    function renderPayload(payload, docId) {
+      const item = payload && typeof payload.item === "object" ? payload.item : {};
+      const kb = Number(payload && payload.raw_size_bytes || 0) / 1024;
+      metaKv.innerHTML = `
+        <div class="k">doc_id</div><div class="v mono">${esc(docId)}</div>
+        <div class="k">ticker / type</div><div class="v">${esc(String(item.ticker || ""))} / ${esc(String(item.doc_type || ""))}</div>
+        <div class="k">status / attempts</div><div class="v">${esc(String(item.status || ""))} / ${esc(String(item.attempts ?? ""))}</div>
+        <div class="k">raw path</div><div class="v mono">${esc(String(payload.raw_path || ""))}</div>
+        <div class="k">content type</div><div class="v">${esc(String(payload.raw_content_type || ""))}</div>
+        <div class="k">size / sha256</div><div class="v">${esc(`${kb.toFixed(1)} KB`)} / <span class="mono">${esc(String(payload.raw_sha256 || ""))}</span></div>
+        <div class="k">last error</div><div class="v">${esc(String(item.last_error || "none"))}</div>
+      `;
+      const text = String(payload && payload.preview_text ? payload.preview_text : "").trim();
+      preview.textContent = text || "(binary/no text preview)";
+      setActionLinks(docId, item);
+    }
+
+    async function loadRaw(rawDocId) {
+      const docId = normalizeDocId(rawDocId);
+      if (!docId) {
+        meta.textContent = "doc_id is required.";
+        return;
+      }
+      docIdInput.value = docId;
+      const q = new URLSearchParams(window.location.search);
+      q.set("doc_id", docId);
+      window.history.replaceState({}, "", `${window.location.pathname}?${q.toString()}`);
+      meta.textContent = `Loading ${docId} ...`;
+      preview.textContent = "(loading)";
+      try {
+        const payload = await fetchJson(`/stockflow/report_source/docs/queue/raw/${encodeURIComponent(docId)}`);
+        renderPayload(payload, docId);
+        meta.textContent = `Loaded at ${new Date().toLocaleString()}`;
+      } catch (err) {
+        meta.textContent = `Load failed: ${String(err && err.message ? err.message : err)}`;
+        metaKv.innerHTML = "";
+        preview.textContent = "(failed)";
+      }
+    }
+
+    loadBtn.addEventListener("click", () => loadRaw(docIdInput.value));
+    docIdInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") loadRaw(docIdInput.value);
+    });
+
+    docIdInput.value = DEFAULT_DOC_ID;
+    if (DEFAULT_DOC_ID) {
+      loadRaw(DEFAULT_DOC_ID);
+    }
+  </script>
+</body>
+</html>
+"""
+    html = html.replace("__DEFAULT_DOC_ID_JSON__", default_doc_id_json)
     return HTMLResponse(content=html)
 
 

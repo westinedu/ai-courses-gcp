@@ -53,6 +53,10 @@ financial_engine/
 | `REPORT_SOURCE_GOOGLE_API_KEY` | （可选）Google Programmable Search API Key，用于补充候选 URL | `""` |
 | `REPORT_SOURCE_GOOGLE_CX` | （可选）Google Programmable Search Engine CX | `""` |
 | `REPORT_SOURCE_HTTPX_LOG_LEVEL` | `httpx` 日志级别（`INFO/WARNING/ERROR`）；默认 `INFO`（打印逐条请求） | `INFO` |
+| `REPORT_SOURCE_ENABLE_CHALLENGE_BYPASS` | 是否启用挑战页绕过链路（httpx→cloudscraper→agent） | `1` |
+| `REPORT_SOURCE_ENABLE_CLOUDSCRAPER_BYPASS` | 是否启用 cloudscraper 作为挑战页 fallback | `1` |
+| `REPORT_SOURCE_FETCH_AGENT_URL` | 可选：外部 AI agent/openclaw 抓取服务 URL（POST JSON） | `""` |
+| `REPORT_SOURCE_FETCH_AGENT_TIMEOUT_SECONDS` | 调用外部抓取 agent 超时（秒） | `20` |
 | `REPORT_SOURCE_MONITOR_ENABLED` | 是否开启官方财报 URL 监听线程（`1/true` 启用） | `0` |
 | `REPORT_SOURCE_MONITOR_RUN_ON_STARTUP` | 启动后是否立即执行一次监听 | `1` |
 | `REPORT_SOURCE_MONITOR_EARNINGS_DAY_INTERVAL_MINUTES` | 财报日轮询间隔（分钟） | `60` |
@@ -63,6 +67,9 @@ financial_engine/
 | `REPORT_SOURCE_DOC_QUEUE_STATE_FILE` | 文档级队列状态文件（本地） | `data/report_source_doc_queue_state.json` |
 | `REPORT_SOURCE_DOC_ARTIFACT_DIR` | 文档解析与分析产物目录（本地） | `data/report_source_doc_artifacts` |
 | `REPORT_SOURCE_DOC_RAW_DIR` | 文档原始抓取文件目录（本地，HTML/PDF 等） | `data/report_source_doc_raw` |
+| `REPORT_SOURCE_CHILD_MAX_LINKS_PER_PARENT` | 单个入口页在分析阶段最多扩展的二级文档链接数 | `80` |
+| `REPORT_SOURCE_Q4_FEED_DISCOVERY_ENABLED` | 是否启用 Q4 动态财报 feed 抓取（从 `quarterly-results` 解析最新季度子项） | `1` |
+| `REPORT_SOURCE_Q4_LATEST_REPORTS_PER_PARENT` | 每个财报入口页从 Q4 feed 抽取“最新季度”条目数 | `1` |
 | `REPORT_SOURCE_EXTRACTION_MODEL` | 文档结构化抽取模型（可选，默认同 `REPORT_SOURCE_AI_MODEL`） | `gemini-1.5-flash-002` |
 
 > **建议**：生产环境通过 Cloud Run 的 `--set-env-vars` 或 Secret Manager 配置。
@@ -200,13 +207,22 @@ docker run -p 8080:8080 \
 - `GET /stockflow/report_source/docs/queue/items?status=queued&ticker=NVDA`  
   查看具体队列项。
 - `POST /stockflow/report_source/docs/queue/analyze/{doc_id}`  
-  对指定文档执行深度分析（规则抽取 + 可选 Vertex AI 抽取）。
+  对指定文档执行深度分析（规则抽取 + 可选 Vertex AI 抽取），并从入口页自动发现二级文档（Press Release/PDF/Webcast 等）入队。  
+  若页面是 Q4 `quarterly-results` 动态模板，会额外调用 `feed/FinancialReport.svc/GetFinancialReportList` 抓取最新季度真实子文档链接（PR/Webcast/CFO Commentary/Presentation/10-Q/10-K 等）。
 - `POST /stockflow/report_source/docs/queue/analyze_next`  
   按优先级分析下一个待处理文档。
 - `GET /stockflow/report_source/docs/queue/raw/{doc_id}`  
   查看原始抓取文件元数据与文本预览（`?download=1` 可直接下载/打开原始文件）。
 - `GET /stockflow/report_source/docs/queue/analysis/{doc_id}`  
   查看该文档的分析产物 JSON（含 heuristic/AI 结构化结果）。
+
+> 当公司官网触发 Cloudflare/WAF challenge 时，抓取器会按 `httpx -> cloudscraper -> REPORT_SOURCE_FETCH_AGENT_URL` 顺序自动 fallback。  
+> 若三层仍失败，队列项会标记 `blocked_by_waf`，并在 `fetch_via` 字段显示最后抓取来源。
+
+`REPORT_SOURCE_FETCH_AGENT_URL` 的建议协议：
+- 请求（POST JSON）：`{"url":"https://...","include_raw":true,"max_html_chars":300000,"max_text_chars":20000,"max_raw_bytes":5000000}`
+- 响应（JSON）至少包含：`status_code`、`final_url`、`content_type`、`html/text/body_text` 之一
+- 可选字段：`title`、`links`、`raw_b64`（原始二进制 base64）或 `raw_text`
 
 ### 本地结果回灌到 GCS（给 StockFlow 直接使用）
 - 本地缓存文件位置：`GCP/financial_engine/data/*_report_source.json`

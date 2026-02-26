@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urlencode, urljoin, urlparse, urlunparse
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -33,6 +33,13 @@ def _utc_iso_now() -> str:
 
 def _norm_ticker(raw: str) -> str:
     return str(raw or "").strip().upper()
+
+
+def _parse_bool_env(name: str, default: bool) -> bool:
+    raw = str(os.environ.get(name, "")).strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _norm_tickers(items: List[str]) -> List[str]:
@@ -78,6 +85,11 @@ def _doc_kind_from_url(url: str) -> Tuple[str, str, int]:
         return "10-Q", "authoritative", 10
     if re.search(r"(^|[^a-z0-9])10[-_ ]?k([^a-z0-9]|$)", u):
         return "10-K", "authoritative", 10
+    # explicit downloadable attachments
+    if u.endswith(".pdf"):
+        return "pdf_document", "supplementary", 60
+    if any(u.endswith(ext) for ext in [".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".zip", ".xml", ".txt"]):
+        return "attachment_document", "supplementary", 62
     # fast path
     if re.search(r"(^|[^a-z0-9])8[-_ ]?k([^a-z0-9]|$)", u):
         return "8-K", "fast", 20
@@ -91,9 +103,6 @@ def _doc_kind_from_url(url: str) -> Tuple[str, str, int]:
     # generic filings path
     if any(k in u for k in ["sec-filings", "filings", "edgar"]):
         return "filings_index", "supplementary", 55
-    # only keep some obvious docs
-    if u.endswith(".pdf"):
-        return "pdf_document", "supplementary", 60
     return "", "", 0
 
 
@@ -156,6 +165,78 @@ def _is_text_like(content_type: str, path: str) -> bool:
         return True
     suffix = Path(path).suffix.lower()
     return suffix in {".txt", ".html", ".htm", ".json", ".xml", ".csv", ".md"}
+
+
+_ATTACHMENT_EXTENSIONS = {
+    ".pdf",
+    ".txt",
+    ".csv",
+    ".xml",
+    ".zip",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+}
+
+_ASSET_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".webp",
+    ".ico",
+    ".css",
+    ".js",
+    ".map",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".mp4",
+    ".mp3",
+    ".m4a",
+    ".avi",
+    ".mov",
+}
+
+_FINANCIAL_CHILD_KEYWORDS = [
+    "press-release",
+    "financial-results",
+    "earnings-release",
+    "quarterly-results",
+    "news-detail",
+    "news-details",
+    "webcast",
+    "cfo-commentary",
+    "prepared-remarks",
+    "shareholder-letter",
+    "quarterly-earnings",
+    "transcript",
+    "resultscenter",
+]
+
+_EXTRA_DOC_HOST_SUFFIXES = [
+    "q4cdn.com",
+    "q4inc.com",
+    "d1io3yog0oux5.cloudfront.net",
+]
+
+_CHILD_MUTABLE_SOURCE_KINDS = {
+    "child_link",
+    "q4_financial_feed",
+}
+
+_Q4_REPORT_TYPES_PARAM = "First Quarter|Second Quarter|Third Quarter|Fourth Quarter|"
+_Q4_QUARTER_ORDER = {
+    "first quarter": 1,
+    "second quarter": 2,
+    "third quarter": 3,
+    "fourth quarter": 4,
+}
 
 
 def _extract_metric_sentence(text: str, keywords: List[str]) -> str:
@@ -332,6 +413,21 @@ class ReportSourceDocumentPipeline:
         self._state_path = Path(state_file_path).resolve()
         self._artifact_dir = Path(artifact_dir).resolve()
         self._raw_dir = Path(raw_dir).resolve()
+        self._child_max_links_per_parent = max(
+            5,
+            min(
+                200,
+                int(os.environ.get("REPORT_SOURCE_CHILD_MAX_LINKS_PER_PARENT", "80") or 80),
+            ),
+        )
+        self._q4_feed_discovery_enabled = _parse_bool_env("REPORT_SOURCE_Q4_FEED_DISCOVERY_ENABLED", True)
+        self._q4_latest_reports_per_parent = max(
+            1,
+            min(
+                6,
+                int(os.environ.get("REPORT_SOURCE_Q4_LATEST_REPORTS_PER_PARENT", "1") or 1),
+            ),
+        )
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         self._artifact_dir.mkdir(parents=True, exist_ok=True)
         self._raw_dir.mkdir(parents=True, exist_ok=True)
@@ -537,6 +633,9 @@ class ReportSourceDocumentPipeline:
                 "state_file": str(self._state_path),
                 "artifact_dir": str(self._artifact_dir),
                 "raw_dir": str(self._raw_dir),
+                "child_max_links_per_parent": int(self._child_max_links_per_parent),
+                "q4_feed_discovery_enabled": bool(self._q4_feed_discovery_enabled),
+                "q4_latest_reports_per_parent": int(self._q4_latest_reports_per_parent),
                 "recent_events": self._events[-30:],
             }
 
@@ -618,6 +717,502 @@ class ReportSourceDocumentPipeline:
             except Exception:
                 payload["preview_text"] = ""
         return payload
+
+    @staticmethod
+    def _is_supported_child_host(parent_url: str, candidate_url: str) -> bool:
+        p_host = str(urlparse(str(parent_url or "")).hostname or "").lower()
+        c_host = str(urlparse(str(candidate_url or "")).hostname or "").lower()
+        if not c_host:
+            return False
+        if not p_host:
+            return True
+        if c_host == p_host:
+            return True
+
+        p_parts = [x for x in p_host.split(".") if x]
+        if len(p_parts) >= 2:
+            p_root = ".".join(p_parts[-2:])
+            if c_host == p_root or c_host.endswith(f".{p_root}"):
+                return True
+
+        for suffix in _EXTRA_DOC_HOST_SUFFIXES:
+            s = str(suffix or "").strip().lower()
+            if not s:
+                continue
+            if c_host == s or c_host.endswith(f".{s}"):
+                return True
+        return False
+
+    @staticmethod
+    def _looks_like_financial_child_url(url: str) -> bool:
+        u = str(url or "").strip()
+        if not u:
+            return False
+        parsed = urlparse(u)
+        path = str(parsed.path or "").lower()
+        query = str(parsed.query or "").lower()
+        merged = f"{path}?{query}"
+        ext = Path(path).suffix.lower()
+        if ext in _ASSET_EXTENSIONS:
+            return False
+        if any(seg in path for seg in ["/images/", "/image/", "/css/", "/js/", "/fonts/"]):
+            return False
+        if ext in _ATTACHMENT_EXTENSIONS:
+            return True
+        return any(k in merged for k in _FINANCIAL_CHILD_KEYWORDS)
+
+    @staticmethod
+    def _extract_embedded_links(raw_bytes: bytes) -> List[str]:
+        if not raw_bytes:
+            return []
+        text = raw_bytes.decode("utf-8", errors="ignore")
+        if not text:
+            return []
+        candidates: List[str] = []
+        # href/src attributes in HTML and JS strings
+        for m in re.findall(r'''(?:href|src)\s*=\s*["']([^"']+)["']''', text, flags=re.IGNORECASE):
+            candidates.append(str(m))
+        # absolute URLs embedded in inline scripts / JSON blobs
+        for m in re.findall(r'''https?://[^\s"'<>\\]+''', text, flags=re.IGNORECASE):
+            candidates.append(str(m))
+        # protocol-relative URLs often used by q4cdn assets/documents
+        for m in re.findall(r'''//[a-z0-9._-]+/[^\s"'<>\\]+''', text, flags=re.IGNORECASE):
+            candidates.append(str(m))
+        # preserve insertion order, strip garbage suffix
+        out: List[str] = []
+        seen = set()
+        for raw in candidates:
+            link = str(raw or "").strip().strip("()[]{};,")
+            if not link or link in seen:
+                continue
+            seen.add(link)
+            out.append(link)
+            if len(out) >= 1200:
+                break
+        return out
+
+    @staticmethod
+    def _parse_q4_report_date(raw_value: Any) -> datetime:
+        raw = str(raw_value or "").strip()
+        if not raw:
+            return datetime(1970, 1, 1, tzinfo=timezone.utc)
+        for fmt in ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+    @classmethod
+    def _q4_report_sort_key(cls, report: Dict[str, Any]) -> Tuple[int, int, float]:
+        report_date = cls._parse_q4_report_date(report.get("ReportDate"))
+        subtype = str(report.get("ReportSubType") or "").strip().lower()
+        quarter_order = 0
+        for name, idx in _Q4_QUARTER_ORDER.items():
+            if name in subtype:
+                quarter_order = idx
+                break
+        try:
+            report_year = int(report.get("ReportYear") or 0)
+        except Exception:
+            report_year = 0
+        if report_year <= 0:
+            report_year = int(report_date.year or 0)
+        return (report_year, quarter_order, report_date.timestamp())
+
+    @staticmethod
+    def _looks_like_q4_financial_parent(parent_url: str, raw_bytes: bytes) -> bool:
+        u = str(parent_url or "").lower()
+        if any(k in u for k in ["quarterly-results", "financial-reports"]):
+            return True
+        if not raw_bytes:
+            return False
+        body = raw_bytes.decode("utf-8", errors="ignore").lower()
+        markers = [
+            "q4financials(",
+            "financialreportservice.svc",
+            "feed/financialreport.svc",
+            "evergreen-financial--accordion",
+        ]
+        return any(m in body for m in markers)
+
+    @staticmethod
+    def _extract_language_id(raw_bytes: bytes) -> int:
+        if not raw_bytes:
+            return 1
+        body = raw_bytes.decode("utf-8", errors="ignore")
+        m = re.search(r"GetLanguageId\(\)\s*\{\s*return\s*['\"]?(\d+)", body)
+        if m:
+            try:
+                return max(1, int(m.group(1)))
+            except Exception:
+                return 1
+        m = re.search(r"\"LanguageId\"\s*:\s*(\d+)", body)
+        if m:
+            try:
+                return max(1, int(m.group(1)))
+            except Exception:
+                return 1
+        return 1
+
+    @staticmethod
+    def _build_q4_financial_feed_url(base_url: str, language_id: int) -> str:
+        parsed = urlparse(str(base_url or ""))
+        if not parsed.scheme or not parsed.netloc:
+            return ""
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        params = {
+            "pageSize": "-1",
+            "pageNumber": "0",
+            "includeTags": "true",
+            "year": "-1",
+            "excludeSelection": "1",
+            "reportTypes": _Q4_REPORT_TYPES_PARAM,
+            "LanguageId": str(max(1, int(language_id or 1))),
+        }
+        return f"{origin}/feed/FinancialReport.svc/GetFinancialReportList?{urlencode(params)}"
+
+    @staticmethod
+    def _doc_kind_from_q4_feed_doc(doc: Dict[str, Any], canonical_url: str) -> Tuple[str, str, int]:
+        doc_type, lane, priority = _doc_kind_from_url(canonical_url)
+        if doc_type:
+            return doc_type, lane, priority
+
+        category = str(doc.get("DocumentCategory") or "").strip().lower()
+        title = str(doc.get("DocumentTitle") or "").strip().lower()
+        label = f"{category} {title}"
+        if "press" in label or category == "news":
+            return "PR", "fast", 20
+        if "webcast" in label:
+            return "webcast", "supplementary", 30
+        if "transcript" in label:
+            return "transcript", "supplementary", 40
+        if "cfo" in label:
+            return "cfo_commentary", "supplementary", 42
+        if "presentation" in label:
+            return "presentation", "supplementary", 50
+        if "revenue trend" in label or "trend" in label:
+            return "revenue_trend", "supplementary", 52
+        return "linked_document", "supplementary", 64
+
+    def _upsert_child_candidates(self, candidates: List[Dict[str, Any]]) -> Dict[str, int]:
+        now_iso = _utc_iso_now()
+        discovered = 0
+        updated = 0
+        with self._lock:
+            for cand in candidates:
+                doc_id = self._doc_id(cand["ticker"], cand["canonical_url"])
+                existing = self._items.get(doc_id)
+                if not isinstance(existing, dict):
+                    payload = {
+                        "doc_id": doc_id,
+                        "ticker": cand["ticker"],
+                        "doc_type": cand["doc_type"],
+                        "lane": cand["lane"],
+                        "priority": cand["priority"],
+                        "url": cand["url"],
+                        "canonical_url": cand["canonical_url"],
+                        "source_kind": cand["source_kind"],
+                        "source_url": cand["source_url"],
+                        "parent_doc_id": cand["parent_doc_id"],
+                        "parent_doc_type": cand["parent_doc_type"],
+                        "status": "queued",
+                        "attempts": 0,
+                        "last_error": "",
+                        "first_seen_at": now_iso,
+                        "last_seen_at": now_iso,
+                        "discovered_at": now_iso,
+                    }
+                    for key, value in cand.items():
+                        if str(key).startswith("q4_"):
+                            payload[str(key)] = value
+                    self._items[doc_id] = payload
+                    discovered += 1
+                    continue
+
+                if str(existing.get("source_kind") or "") not in _CHILD_MUTABLE_SOURCE_KINDS:
+                    continue
+                existing["last_seen_at"] = now_iso
+                existing["doc_type"] = cand["doc_type"]
+                existing["lane"] = cand["lane"]
+                existing["priority"] = cand["priority"]
+                existing["url"] = cand["url"]
+                existing["canonical_url"] = cand["canonical_url"]
+                if existing.get("status") == "failed":
+                    existing["status"] = "queued"
+                if not existing.get("parent_doc_id"):
+                    existing["parent_doc_id"] = cand["parent_doc_id"]
+                if not existing.get("parent_doc_type"):
+                    existing["parent_doc_type"] = cand["parent_doc_type"]
+                for key, value in cand.items():
+                    if str(key).startswith("q4_"):
+                        existing[str(key)] = value
+                updated += 1
+        return {
+            "discovered": discovered,
+            "updated": updated,
+        }
+
+    def _collect_child_candidates_from_links(
+        self,
+        *,
+        parent_item: Dict[str, Any],
+        raw_links: List[str],
+        base_url: str,
+    ) -> Dict[str, Any]:
+        parent_doc_id = str(parent_item.get("doc_id") or "")
+        parent_doc_type = str(parent_item.get("doc_type") or "")
+        ticker = _norm_ticker(str(parent_item.get("ticker") or ""))
+        canonical_parent = _canonicalize_url(str(parent_item.get("canonical_url") or ""))
+
+        candidates: List[Dict[str, Any]] = []
+        dedup = set()
+        for href in raw_links:
+            absolute = urljoin(base_url, href)
+            canonical = _canonicalize_url(absolute)
+            if not canonical:
+                continue
+            if canonical == canonical_parent:
+                continue
+            if canonical in dedup:
+                continue
+            dedup.add(canonical)
+            if not self._looks_like_financial_child_url(canonical):
+                continue
+            if not self._is_supported_child_host(base_url, canonical):
+                continue
+
+            doc_type, lane, priority = _doc_kind_from_url(canonical)
+            if not doc_type:
+                doc_type, lane, priority = ("linked_document", "supplementary", 64)
+            candidates.append(
+                {
+                    "ticker": ticker,
+                    "doc_type": doc_type,
+                    "lane": lane,
+                    "priority": priority,
+                    "url": absolute,
+                    "canonical_url": canonical,
+                    "source_kind": "child_link",
+                    "source_url": base_url,
+                    "parent_doc_id": parent_doc_id,
+                    "parent_doc_type": parent_doc_type,
+                }
+            )
+            if len(candidates) >= self._child_max_links_per_parent:
+                break
+        return {
+            "scanned": len(raw_links),
+            "accepted": len(candidates),
+            "candidates": candidates,
+        }
+
+    def _collect_child_candidates_from_q4_feed(
+        self,
+        *,
+        service: ReportSourceService,
+        parent_item: Dict[str, Any],
+        base_url: str,
+        raw_bytes: bytes,
+    ) -> Dict[str, Any]:
+        if not self._q4_feed_discovery_enabled:
+            return {
+                "attempted": 0,
+                "accepted": 0,
+                "reports_selected": 0,
+                "reports_total": 0,
+                "candidates": [],
+            }
+        if not self._looks_like_q4_financial_parent(base_url, raw_bytes):
+            return {
+                "attempted": 0,
+                "accepted": 0,
+                "reports_selected": 0,
+                "reports_total": 0,
+                "candidates": [],
+            }
+
+        language_id = self._extract_language_id(raw_bytes)
+        feed_url = self._build_q4_financial_feed_url(base_url, language_id)
+        if not feed_url:
+            return {
+                "attempted": 0,
+                "accepted": 0,
+                "reports_selected": 0,
+                "reports_total": 0,
+                "candidates": [],
+            }
+
+        snap = service.fetcher.fetch_page(feed_url, include_raw=True)
+        if not snap:
+            return {
+                "attempted": 1,
+                "accepted": 0,
+                "reports_selected": 0,
+                "reports_total": 0,
+                "feed_url": feed_url,
+                "feed_error": "fetch_failed",
+                "candidates": [],
+            }
+        if _looks_like_access_challenge(str(snap.title or ""), str(snap.text or "")):
+            return {
+                "attempted": 1,
+                "accepted": 0,
+                "reports_selected": 0,
+                "reports_total": 0,
+                "feed_url": feed_url,
+                "feed_error": "blocked_by_waf",
+                "candidates": [],
+            }
+
+        raw_payload = bytes(snap.raw_bytes or b"")
+        if raw_payload:
+            raw_text = raw_payload.decode("utf-8", errors="ignore")
+        else:
+            raw_text = str(snap.text or "")
+        try:
+            payload = json.loads(raw_text)
+        except Exception:
+            return {
+                "attempted": 1,
+                "accepted": 0,
+                "reports_selected": 0,
+                "reports_total": 0,
+                "feed_url": feed_url,
+                "feed_error": "invalid_json",
+                "candidates": [],
+            }
+        if not isinstance(payload, dict):
+            return {
+                "attempted": 1,
+                "accepted": 0,
+                "reports_selected": 0,
+                "reports_total": 0,
+                "feed_url": feed_url,
+                "feed_error": "invalid_payload",
+                "candidates": [],
+            }
+
+        reports_raw = payload.get("GetFinancialReportListResult")
+        reports = [x for x in (reports_raw or []) if isinstance(x, dict)]
+        quarter_reports: List[Dict[str, Any]] = []
+        for report in reports:
+            subtype = str(report.get("ReportSubType") or "").lower()
+            title = str(report.get("ReportTitle") or "").lower()
+            if "quarter" in subtype or "quarter" in title:
+                quarter_reports.append(report)
+
+        quarter_reports.sort(key=self._q4_report_sort_key, reverse=True)
+        selected_reports = quarter_reports[: int(self._q4_latest_reports_per_parent)]
+
+        parent_doc_id = str(parent_item.get("doc_id") or "")
+        parent_doc_type = str(parent_item.get("doc_type") or "")
+        ticker = _norm_ticker(str(parent_item.get("ticker") or ""))
+        canonical_parent = _canonicalize_url(str(parent_item.get("canonical_url") or ""))
+
+        candidates: List[Dict[str, Any]] = []
+        dedup = set()
+        for report in selected_reports:
+            docs = [d for d in (report.get("Documents") or []) if isinstance(d, dict)]
+            report_title = str(report.get("ReportTitle") or "")
+            report_sub_type = str(report.get("ReportSubType") or "")
+            report_year = report.get("ReportYear")
+            report_date = str(report.get("ReportDate") or "")
+            for doc in docs:
+                doc_url = str(doc.get("DocumentPath") or "").strip()
+                if not doc_url:
+                    continue
+                absolute = urljoin(base_url, doc_url)
+                canonical = _canonicalize_url(absolute)
+                if not canonical:
+                    continue
+                if canonical == canonical_parent:
+                    continue
+                if canonical in dedup:
+                    continue
+                dedup.add(canonical)
+                if not self._is_supported_child_host(base_url, canonical):
+                    continue
+                doc_type, lane, priority = self._doc_kind_from_q4_feed_doc(doc, canonical)
+                candidates.append(
+                    {
+                        "ticker": ticker,
+                        "doc_type": doc_type,
+                        "lane": lane,
+                        "priority": priority,
+                        "url": absolute,
+                        "canonical_url": canonical,
+                        "source_kind": "q4_financial_feed",
+                        "source_url": feed_url,
+                        "parent_doc_id": parent_doc_id,
+                        "parent_doc_type": parent_doc_type,
+                        "q4_report_title": report_title,
+                        "q4_report_sub_type": report_sub_type,
+                        "q4_report_year": report_year,
+                        "q4_report_date": report_date,
+                        "q4_doc_category": str(doc.get("DocumentCategory") or ""),
+                        "q4_doc_title": str(doc.get("DocumentTitle") or ""),
+                        "q4_fetch_via": str(getattr(snap, "fetch_via", "") or "httpx"),
+                    }
+                )
+                if len(candidates) >= self._child_max_links_per_parent:
+                    break
+            if len(candidates) >= self._child_max_links_per_parent:
+                break
+
+        return {
+            "attempted": 1,
+            "accepted": len(candidates),
+            "reports_selected": len(selected_reports),
+            "reports_total": len(quarter_reports),
+            "feed_url": feed_url,
+            "feed_via": str(getattr(snap, "fetch_via", "") or "httpx"),
+            "candidates": candidates,
+        }
+
+    def _discover_child_documents(
+        self,
+        service: ReportSourceService,
+        parent_item: Dict[str, Any],
+        snap_links: List[str],
+        base_url: str,
+        raw_bytes: bytes,
+    ) -> Dict[str, int]:
+        raw_links = [str(x or "").strip() for x in (snap_links or []) if str(x or "").strip()]
+        raw_links.extend(self._extract_embedded_links(raw_bytes))
+        link_stats = self._collect_child_candidates_from_links(
+            parent_item=parent_item,
+            raw_links=raw_links,
+            base_url=base_url,
+        )
+        q4_stats = self._collect_child_candidates_from_q4_feed(
+            service=service,
+            parent_item=parent_item,
+            base_url=base_url,
+            raw_bytes=raw_bytes,
+        )
+
+        merged_candidates: List[Dict[str, Any]] = []
+        dedup = set()
+        for cand in list(link_stats.get("candidates") or []) + list(q4_stats.get("candidates") or []):
+            canonical = str(cand.get("canonical_url") or "")
+            if not canonical or canonical in dedup:
+                continue
+            dedup.add(canonical)
+            merged_candidates.append(cand)
+
+        upsert = self._upsert_child_candidates(merged_candidates)
+
+        return {
+            "scanned": int(link_stats.get("scanned") or 0),
+            "accepted": len(merged_candidates),
+            "discovered": int(upsert.get("discovered") or 0),
+            "updated": int(upsert.get("updated") or 0),
+            "q4_feed_attempted": int(q4_stats.get("attempted") or 0),
+            "q4_feed_accepted": int(q4_stats.get("accepted") or 0),
+            "q4_reports_selected": int(q4_stats.get("reports_selected") or 0),
+            "q4_reports_total": int(q4_stats.get("reports_total") or 0),
+        }
 
     def _write_raw_artifact(
         self,
@@ -708,6 +1303,7 @@ class ReportSourceDocumentPipeline:
                 item["title"] = title
                 item["content_type"] = snap.content_type
                 item["final_url"] = snap.final_url
+                item["fetch_via"] = str(getattr(snap, "fetch_via", "") or "httpx")
                 item.update(raw_meta)
                 self._events.append(
                     {
@@ -716,11 +1312,20 @@ class ReportSourceDocumentPipeline:
                         "doc_id": doc_id,
                         "ticker": item.get("ticker"),
                         "reason": "blocked_by_waf",
+                        "fetch_via": item.get("fetch_via"),
                     }
                 )
                 self._events = self._events[-500:]
                 self._persist_state()
             raise RuntimeError("blocked by WAF/challenge page")
+
+        child_stats = self._discover_child_documents(
+            service=service,
+            parent_item=item,
+            snap_links=list(snap.links or []),
+            base_url=str(snap.final_url or url),
+            raw_bytes=bytes(snap.raw_bytes or b""),
+        )
 
         heuristic = _heuristic_deep_analysis(
             ticker=str(item.get("ticker") or ""),
@@ -750,8 +1355,10 @@ class ReportSourceDocumentPipeline:
                 "status_code": snap.status_code,
                 "content_type": snap.content_type,
                 "title": title,
+                "fetch_via": str(getattr(snap, "fetch_via", "") or "httpx"),
             },
             "raw": raw_meta,
+            "child_discovery": child_stats,
             "heuristic": heuristic,
             "ai": ai_result,
             "final": ai_result if isinstance(ai_result, dict) else heuristic,
@@ -766,7 +1373,29 @@ class ReportSourceDocumentPipeline:
             item["title"] = title
             item["content_type"] = snap.content_type
             item["final_url"] = snap.final_url
+            item["fetch_via"] = str(getattr(snap, "fetch_via", "") or "httpx")
+            item["child_discovered"] = int(child_stats.get("discovered") or 0)
+            item["child_updated"] = int(child_stats.get("updated") or 0)
+            item["child_candidates"] = int(child_stats.get("accepted") or 0)
+            item["q4_feed_attempted"] = int(child_stats.get("q4_feed_attempted") or 0)
+            item["q4_feed_accepted"] = int(child_stats.get("q4_feed_accepted") or 0)
+            item["q4_reports_selected"] = int(child_stats.get("q4_reports_selected") or 0)
+            item["q4_reports_total"] = int(child_stats.get("q4_reports_total") or 0)
             item.update(raw_meta)
+            if int(child_stats.get("discovered") or 0) > 0 or int(child_stats.get("updated") or 0) > 0:
+                self._events.append(
+                    {
+                        "type": "analyze_child_discover",
+                        "at": item["last_analyzed_at"],
+                        "doc_id": doc_id,
+                        "ticker": item.get("ticker"),
+                        "discovered": int(child_stats.get("discovered") or 0),
+                        "updated": int(child_stats.get("updated") or 0),
+                        "accepted": int(child_stats.get("accepted") or 0),
+                        "q4_feed_accepted": int(child_stats.get("q4_feed_accepted") or 0),
+                        "q4_reports_selected": int(child_stats.get("q4_reports_selected") or 0),
+                    }
+                )
             self._events.append(
                 {
                     "type": "analyze",
@@ -776,6 +1405,7 @@ class ReportSourceDocumentPipeline:
                     "doc_type": item.get("doc_type"),
                     "lane": item.get("lane"),
                     "used_ai": bool(isinstance(ai_result, dict)),
+                    "fetch_via": item.get("fetch_via"),
                 }
             )
             self._events = self._events[-500:]
