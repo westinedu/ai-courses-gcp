@@ -201,6 +201,12 @@ async def report_source_home_page() -> HTMLResponse:
           <button id="goBtn" class="btn btn-soft" type="button">按 ticker 打开</button>
         </div>
       </article>
+
+      <article class="card">
+        <h2>Pipeline Monitor</h2>
+        <p>监控文档发现、排队、分析进度，并直接触发 discover/analyze-next，便于跟踪财报模块运行状态。</p>
+        <a id="pipelineLink" class="btn btn-primary" href="/report_source/pipeline_monitor?ticker=NVDA">进入 Monitor (NVDA)</a>
+      </article>
     </section>
 
     <section class="meta">
@@ -210,6 +216,8 @@ async def report_source_home_page() -> HTMLResponse:
         <li><a href="/stockflow/report_source/catalog/item/NVDA">/stockflow/report_source/catalog/item/NVDA</a></li>
         <li><a href="/stockflow/report_source/NVDA?force_refresh=0">/stockflow/report_source/NVDA?force_refresh=0</a></li>
         <li><a href="/earnings/NVDA?force_refresh=0">/earnings/NVDA?force_refresh=0</a></li>
+        <li><a href="/stockflow/report_source/docs/queue/status">/stockflow/report_source/docs/queue/status</a></li>
+        <li><a href="/stockflow/report_source/monitor/status">/stockflow/report_source/monitor/status</a></li>
       </ul>
       <div class="footer">建议固定从本页进入，便于团队统一操作路径与验收标准。</div>
     </section>
@@ -219,6 +227,7 @@ async def report_source_home_page() -> HTMLResponse:
     const inputEl = document.getElementById("tickerInput");
     const goBtn = document.getElementById("goBtn");
     const linkEl = document.getElementById("journeyLink");
+    const pipelineLinkEl = document.getElementById("pipelineLink");
 
     function normalizeTicker(raw) {
       const t = String(raw || "").toUpperCase().trim();
@@ -233,6 +242,7 @@ async def report_source_home_page() -> HTMLResponse:
         return;
       }
       linkEl.href = `/report_source/earnings_journey?ticker=${encodeURIComponent(ticker)}`;
+      pipelineLinkEl.href = `/report_source/pipeline_monitor?ticker=${encodeURIComponent(ticker)}`;
       window.location.href = linkEl.href;
     }
 
@@ -1499,6 +1509,776 @@ async def report_source_earnings_journey_page(
 </html>
 """
     html = html.replace("__DEFAULT_TICKER_JSON__", default_ticker_json)
+    return HTMLResponse(content=html)
+
+
+@router.get("/report_source/pipeline_monitor", summary="财报文档分析流程监控页", response_class=HTMLResponse)
+async def report_source_pipeline_monitor_page(
+    ticker: str = Query("NVDA", description="默认过滤 ticker"),
+    status: str = Query("", description="默认过滤状态"),
+    limit: int = Query(120, ge=20, le=500, description="默认展示队列条数"),
+) -> HTMLResponse:
+    normalized_ticker = str(ticker or "NVDA").strip().upper() or "NVDA"
+    normalized_status = str(status or "").strip().lower()
+    normalized_limit = int(max(20, min(500, limit)))
+    default_ticker_json = json.dumps(normalized_ticker)
+    default_status_json = json.dumps(normalized_status)
+    default_limit_json = json.dumps(normalized_limit)
+    html = """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pipeline Monitor</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --card: #ffffff;
+      --text: #0f172a;
+      --muted: #475569;
+      --line: #dbe3ef;
+      --blue: #0ea5e9;
+      --indigo: #4f46e5;
+      --green: #059669;
+      --red: #dc2626;
+      --amber: #d97706;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background:
+        radial-gradient(circle at 12% 8%, rgba(14, 165, 233, .08), transparent 34%),
+        radial-gradient(circle at 90% 0%, rgba(79, 70, 229, .07), transparent 38%),
+        var(--bg);
+    }
+    .wrap {
+      max-width: 1260px;
+      margin: 24px auto 48px;
+      padding: 0 16px;
+    }
+    .hero {
+      border: 1px solid rgba(148, 163, 184, .35);
+      border-radius: 18px;
+      color: #e2e8f0;
+      background: linear-gradient(140deg, #0b1325, #15305a 55%, #312e81);
+      box-shadow: 0 16px 36px rgba(15, 23, 42, .24);
+      padding: 18px;
+      margin-bottom: 14px;
+    }
+    .hero h1 {
+      margin: 0 0 7px;
+      font-size: 28px;
+      line-height: 1.2;
+    }
+    .hero p {
+      margin: 0;
+      color: #cbd5e1;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    .toolbar {
+      margin-top: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .toolbar input, .toolbar select {
+      border: 1px solid rgba(148, 163, 184, .55);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 13px;
+      min-height: 36px;
+      background: rgba(255, 255, 255, .95);
+      color: #0f172a;
+    }
+    .toolbar input[name="ticker"] {
+      width: 150px;
+      text-transform: uppercase;
+      font-weight: 700;
+      letter-spacing: .04em;
+    }
+    .toolbar input[name="limit"] {
+      width: 96px;
+    }
+    .toolbar-tip {
+      font-size: 11px;
+      color: #dbeafe;
+      opacity: .92;
+      white-space: nowrap;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border-radius: 10px;
+      border: 1px solid transparent;
+      min-height: 36px;
+      padding: 8px 11px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all .15s ease;
+      text-decoration: none;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn-primary {
+      color: #fff;
+      background: linear-gradient(135deg, var(--blue), var(--indigo));
+      box-shadow: 0 8px 18px rgba(79, 70, 229, .22);
+    }
+    .btn-soft {
+      color: #e2e8f0;
+      border-color: rgba(148, 163, 184, .55);
+      background: rgba(15, 23, 42, .28);
+    }
+    .btn-ghost {
+      color: #1e293b;
+      background: #eef4ff;
+      border-color: #c7d8f7;
+    }
+    .btn-warn {
+      color: #1f2937;
+      background: #fef3c7;
+      border-color: #fcd34d;
+    }
+    .meta {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #93c5fd;
+      min-height: 1.2em;
+      white-space: pre-wrap;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, .05);
+    }
+    .card h2 {
+      margin: 0 0 8px;
+      font-size: 16px;
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      gap: 6px 10px;
+      font-size: 13px;
+      align-items: baseline;
+    }
+    .k {
+      color: #64748b;
+      font-weight: 700;
+    }
+    .v {
+      color: #0f172a;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .list {
+      margin: 6px 0 0;
+      padding: 0 0 0 18px;
+      max-height: 220px;
+      overflow: auto;
+    }
+    .list li {
+      margin: 6px 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: #1e293b;
+    }
+    .chip-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin: 6px 0 0;
+    }
+    .chip {
+      border-radius: 999px;
+      border: 1px solid #cbd5e1;
+      background: #fff;
+      padding: 3px 9px;
+      font-size: 12px;
+      color: #334155;
+    }
+    .section-title {
+      margin: 0 0 8px;
+      font-size: 15px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid #dbe3ef;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #fff;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, .05);
+      font-size: 12px;
+    }
+    th, td {
+      border-bottom: 1px solid #edf2f7;
+      padding: 7px 8px;
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    th {
+      background: #f8fafc;
+      font-size: 11px;
+      color: #475569;
+      font-weight: 800;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 2px 9px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .status-queued { background: #e0f2fe; color: #075985; }
+    .status-processing { background: #e0e7ff; color: #3730a3; }
+    .status-analyzed { background: #dcfce7; color: #166534; }
+    .status-failed { background: #fee2e2; color: #991b1b; }
+    .status-unknown { background: #f1f5f9; color: #334155; }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 11px;
+    }
+    .small {
+      font-size: 11px;
+      color: #64748b;
+    }
+    .ok { color: var(--green); }
+    .bad { color: var(--red); }
+    .warn { color: var(--amber); }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .actions .btn {
+      min-height: 32px;
+      padding: 6px 10px;
+      font-size: 11px;
+    }
+    .home-link {
+      margin-left: auto;
+    }
+    @media (max-width: 1040px) {
+      .grid { grid-template-columns: 1fr; }
+      .kv { grid-template-columns: 145px 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>Pipeline Monitor</h1>
+      <p>监控财报文档发现、排队、AI 分析与监听器运行状态。默认按 ticker 聚焦，也可切换为全局视角。</p>
+      <div class="toolbar">
+        <input name="ticker" id="tickerInput" placeholder="Ticker, e.g. NVDA" />
+        <select id="statusSelect">
+          <option value="">all status</option>
+          <option value="queued">queued</option>
+          <option value="processing">processing</option>
+          <option value="analyzed">analyzed</option>
+          <option value="failed">failed</option>
+        </select>
+        <input name="limit" id="limitInput" type="number" min="20" max="500" step="10" title="队列列表最大展示条数，范围 20-500。数字越大，刷新会更慢。" />
+        <span class="toolbar-tip" id="limitTip">最多显示 120 条队列项（20-500）</span>
+        <button class="btn btn-primary" id="refreshBtn" type="button">刷新状态</button>
+        <button class="btn btn-ghost" id="discoverBtn" type="button">Discover Run Once</button>
+        <button class="btn btn-ghost" id="analyzeNextBtn" type="button">Analyze Next</button>
+        <button class="btn btn-warn" id="monitorRunBtn" type="button">Monitor Run Once</button>
+        <button class="btn btn-soft" id="autoRefreshBtn" type="button">Auto Refresh: Off</button>
+        <a class="btn btn-soft home-link" href="/report_source">返回 Portal</a>
+      </div>
+      <div class="meta" id="meta">Ready.</div>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Listener Runtime</h2>
+        <div class="kv" id="monitorKv"></div>
+        <div class="small" style="margin-top:7px;">recent events</div>
+        <ul class="list" id="monitorEvents"></ul>
+      </article>
+      <article class="card">
+        <h2>Queue Summary</h2>
+        <div class="kv" id="queueKv"></div>
+        <div class="small" style="margin-top:7px;">by status / lane / doc type</div>
+        <div class="chip-row" id="queueChips"></div>
+        <div class="small" style="margin-top:7px;">recent events</div>
+        <ul class="list" id="queueEvents"></ul>
+      </article>
+    </section>
+
+    <h2 class="section-title">Queue Items</h2>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:130px;">doc_id</th>
+          <th style="width:70px;">ticker</th>
+          <th style="width:70px;">type</th>
+          <th style="width:92px;">lane</th>
+          <th style="width:86px;">status</th>
+          <th style="width:62px;">prio</th>
+          <th style="width:66px;">attempts</th>
+          <th style="width:130px;">discovered</th>
+          <th style="width:130px;">last analyzed</th>
+          <th>notes</th>
+          <th style="width:120px;">action</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <script>
+    const DEFAULT_TICKER = __DEFAULT_TICKER_JSON__;
+    const DEFAULT_STATUS = __DEFAULT_STATUS_JSON__;
+    const DEFAULT_LIMIT = __DEFAULT_LIMIT_JSON__;
+    const AUTO_REFRESH_MS = 10000;
+
+    const tickerInput = document.getElementById("tickerInput");
+    const statusSelect = document.getElementById("statusSelect");
+    const limitInput = document.getElementById("limitInput");
+    const refreshBtn = document.getElementById("refreshBtn");
+    const discoverBtn = document.getElementById("discoverBtn");
+    const analyzeNextBtn = document.getElementById("analyzeNextBtn");
+    const monitorRunBtn = document.getElementById("monitorRunBtn");
+    const autoRefreshBtn = document.getElementById("autoRefreshBtn");
+    const meta = document.getElementById("meta");
+    const rows = document.getElementById("rows");
+    const monitorKv = document.getElementById("monitorKv");
+    const monitorEvents = document.getElementById("monitorEvents");
+    const queueKv = document.getElementById("queueKv");
+    const queueEvents = document.getElementById("queueEvents");
+    const queueChips = document.getElementById("queueChips");
+    const limitTip = document.getElementById("limitTip");
+
+    let autoTimer = null;
+    let inFlight = false;
+
+    function esc(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    function normalizeTicker(raw) {
+      const t = String(raw || "").trim().toUpperCase();
+      if (!t) return "";
+      if (!/^[A-Z0-9.^=-]{1,12}$/.test(t)) return "";
+      return t;
+    }
+
+    function normalizeLimit(raw) {
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return DEFAULT_LIMIT;
+      return Math.max(20, Math.min(500, Math.floor(n)));
+    }
+
+    function renderLimitTip() {
+      if (!limitTip) return;
+      const limit = normalizeLimit(limitInput.value);
+      limitTip.textContent = `最多显示 ${limit} 条队列项（20-500）`;
+    }
+
+    function fmtTime(value) {
+      if (!value) return "n/a";
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return String(value);
+      return d.toLocaleString();
+    }
+
+    function shortId(docId) {
+      const s = String(docId || "");
+      if (s.length <= 14) return s;
+      return `${s.slice(0, 8)}...${s.slice(-4)}`;
+    }
+
+    function boolText(v) {
+      return v ? "yes" : "no";
+    }
+
+    async function fetchJson(url, options = undefined) {
+      const res = await fetch(url, options);
+      let data = null;
+      try {
+        data = await res.json();
+      } catch (err) {
+        data = null;
+      }
+      if (!res.ok) {
+        const detail = data && typeof data === "object" ? (data.detail || data.message || JSON.stringify(data)) : `HTTP ${res.status}`;
+        throw new Error(String(detail));
+      }
+      return data;
+    }
+
+    function renderMonitor(payload) {
+      const cfg = payload && typeof payload.config === "object" ? payload.config : {};
+      const rt = payload && typeof payload.runtime === "object" ? payload.runtime : {};
+      monitorKv.innerHTML = `
+        <div class="k">enabled</div><div class="v ${cfg.enabled ? "ok" : "warn"}">${esc(boolText(Boolean(cfg.enabled)))}</div>
+        <div class="k">worker running</div><div class="v ${rt.worker_running ? "ok" : "warn"}">${esc(boolText(Boolean(rt.worker_running)))}</div>
+        <div class="k">thread alive</div><div class="v ${rt.thread_alive ? "ok" : "warn"}">${esc(boolText(Boolean(rt.thread_alive)))}</div>
+        <div class="k">phase</div><div class="v">${esc(rt.phase || "n/a")}</div>
+        <div class="k">next run at</div><div class="v">${esc(fmtTime(rt.next_run_at))}</div>
+        <div class="k">last run at</div><div class="v">${esc(fmtTime(rt.last_run_at))}</div>
+        <div class="k">last reason</div><div class="v">${esc(rt.last_reason || "n/a")}</div>
+        <div class="k">last error</div><div class="v ${rt.last_error ? "bad" : ""}">${esc(rt.last_error || "none")}</div>
+        <div class="k">earnings-day tickers</div><div class="v">${esc((Array.isArray(rt.earnings_day_tickers) ? rt.earnings_day_tickers.join(", ") : "") || "n/a")}</div>
+        <div class="k">normal mode</div><div class="v">${esc(cfg.normal_mode || "n/a")}</div>
+        <div class="k">normal interval</div><div class="v">${esc(String(cfg.normal_interval_minutes || "n/a"))} min</div>
+        <div class="k">earnings-day interval</div><div class="v">${esc(String(cfg.earnings_day_interval_minutes || "n/a"))} min</div>
+      `;
+
+      const events = Array.isArray(payload && payload.recent_events) ? payload.recent_events : [];
+      if (!events.length) {
+        monitorEvents.innerHTML = "<li class='small'>No monitor events yet.</li>";
+      } else {
+        monitorEvents.innerHTML = events.slice(-20).reverse().map((evt) => {
+          const at = fmtTime(evt && evt.at);
+          const type = String(evt && evt.type ? evt.type : "event");
+          const msg = evt && evt.message ? String(evt.message) : "";
+          const changes = Number(evt && evt.changes || 0);
+          const checked = Number(evt && evt.checked_urls || 0);
+          const seeded = Number(evt && evt.newly_seeded || 0);
+          return `<li><span class="mono">${esc(at)}</span> | <strong>${esc(type)}</strong> | checked=${esc(String(checked))}, changes=${esc(String(changes))}, seeded=${esc(String(seeded))}${msg ? ` | ${esc(msg)}` : ""}</li>`;
+        }).join("");
+      }
+    }
+
+    function queueMapToChips(title, obj) {
+      const src = obj && typeof obj === "object" ? obj : {};
+      const pairs = Object.entries(src).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+      if (!pairs.length) return [`<span class="chip">${esc(title)}: n/a</span>`];
+      return pairs.map(([k, v]) => `<span class="chip">${esc(title)} ${esc(String(k))}: ${esc(String(v))}</span>`);
+    }
+
+    function renderQueue(payload) {
+      const byStatus = payload && typeof payload.by_status === "object" ? payload.by_status : {};
+      const byType = payload && typeof payload.by_doc_type === "object" ? payload.by_doc_type : {};
+      const byLane = payload && typeof payload.by_lane === "object" ? payload.by_lane : {};
+      const recentEvents = Array.isArray(payload && payload.recent_events) ? payload.recent_events : [];
+      queueKv.innerHTML = `
+        <div class="k">total items</div><div class="v">${esc(String(payload && payload.items != null ? payload.items : 0))}</div>
+        <div class="k">AI extractor configured</div><div class="v ${payload && payload.ai_extractor_configured ? "ok" : "warn"}">${esc(boolText(Boolean(payload && payload.ai_extractor_configured)))}</div>
+        <div class="k">state file</div><div class="v mono">${esc(payload && payload.state_file ? payload.state_file : "n/a")}</div>
+        <div class="k">artifact dir</div><div class="v mono">${esc(payload && payload.artifact_dir ? payload.artifact_dir : "n/a")}</div>
+      `;
+      const chips = [
+        ...queueMapToChips("status", byStatus),
+        ...queueMapToChips("lane", byLane),
+        ...queueMapToChips("type", byType),
+      ];
+      queueChips.innerHTML = chips.join("");
+
+      if (!recentEvents.length) {
+        queueEvents.innerHTML = "<li class='small'>No queue events yet.</li>";
+      } else {
+        queueEvents.innerHTML = recentEvents.slice(-25).reverse().map((evt) => {
+          const at = fmtTime(evt && evt.at);
+          const type = String(evt && evt.type ? evt.type : "event");
+          const ticker = String(evt && evt.ticker ? evt.ticker : "");
+          const docType = String(evt && evt.doc_type ? evt.doc_type : "");
+          const lane = String(evt && evt.lane ? evt.lane : "");
+          const discovered = evt && evt.discovered != null ? ` discovered=${evt.discovered}` : "";
+          const updated = evt && evt.updated != null ? ` updated=${evt.updated}` : "";
+          return `<li><span class="mono">${esc(at)}</span> | <strong>${esc(type)}</strong>${ticker ? ` | ${esc(ticker)}` : ""}${docType ? ` | ${esc(docType)}` : ""}${lane ? ` | ${esc(lane)}` : ""}${discovered}${updated}</li>`;
+        }).join("");
+      }
+    }
+
+    function statusCls(status) {
+      const s = String(status || "").toLowerCase();
+      if (s === "queued") return "status status-queued";
+      if (s === "processing") return "status status-processing";
+      if (s === "analyzed") return "status status-analyzed";
+      if (s === "failed") return "status status-failed";
+      return "status status-unknown";
+    }
+
+    function renderItems(payload) {
+      const items = Array.isArray(payload && payload.items) ? payload.items : [];
+      if (!items.length) {
+        rows.innerHTML = "<tr><td colspan='11' class='small'>No queue items for current filters.</td></tr>";
+        return;
+      }
+      rows.innerHTML = items.map((item) => {
+        const docId = String(item && item.doc_id ? item.doc_id : "");
+        const notes = [];
+        if (item && item.source_kind) notes.push(`source=${item.source_kind}`);
+        if (item && item.last_error) notes.push(`error=${item.last_error}`);
+        if (item && item.analysis_summary) notes.push(`summary=${item.analysis_summary}`);
+        if (item && item.analysis_path) notes.push(`artifact=${item.analysis_path}`);
+        if (item && item.url) notes.push(`url=${item.url}`);
+        const noteText = notes.join(" | ");
+        return `
+          <tr>
+            <td class="mono" title="${esc(docId)}">${esc(shortId(docId))}</td>
+            <td><strong>${esc(item && item.ticker ? item.ticker : "")}</strong></td>
+            <td>${esc(item && item.doc_type ? item.doc_type : "")}</td>
+            <td>${esc(item && item.lane ? item.lane : "")}</td>
+            <td><span class="${statusCls(item && item.status)}">${esc(item && item.status ? item.status : "unknown")}</span></td>
+            <td>${esc(String(item && item.priority != null ? item.priority : ""))}</td>
+            <td>${esc(String(item && item.attempts != null ? item.attempts : 0))}</td>
+            <td>${esc(fmtTime(item && item.discovered_at))}</td>
+            <td>${esc(fmtTime(item && item.last_analyzed_at))}</td>
+            <td class="small">${esc(noteText || "-")}</td>
+            <td>
+              <div class="actions">
+                <button class="btn btn-ghost" type="button" onclick="analyzeDoc('${esc(docId)}')">Analyze</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function setBusy(flag) {
+      inFlight = flag;
+      refreshBtn.disabled = flag;
+      discoverBtn.disabled = flag;
+      analyzeNextBtn.disabled = flag;
+      monitorRunBtn.disabled = flag;
+    }
+
+    function readFilters() {
+      const ticker = normalizeTicker(tickerInput.value);
+      const status = String(statusSelect.value || "").trim().toLowerCase();
+      const limit = normalizeLimit(limitInput.value);
+      tickerInput.value = ticker;
+      limitInput.value = String(limit);
+      renderLimitTip();
+      return { ticker, status, limit };
+    }
+
+    function updateUrlParams() {
+      const f = readFilters();
+      const q = new URLSearchParams(window.location.search);
+      if (f.ticker) q.set("ticker", f.ticker); else q.delete("ticker");
+      if (f.status) q.set("status", f.status); else q.delete("status");
+      q.set("limit", String(f.limit));
+      const nextUrl = `${window.location.pathname}?${q.toString()}`;
+      window.history.replaceState({}, "", nextUrl);
+    }
+
+    async function loadAll(silent = false) {
+      if (inFlight) return;
+      setBusy(true);
+      const startedAt = new Date();
+      try {
+        updateUrlParams();
+        const f = readFilters();
+        if (!silent) {
+          meta.textContent = `Loading monitor + queue ...`;
+        }
+
+        const queueItemsUrl = new URL("/stockflow/report_source/docs/queue/items", window.location.origin);
+        queueItemsUrl.searchParams.set("limit", String(f.limit));
+        if (f.status) queueItemsUrl.searchParams.set("status", f.status);
+        if (f.ticker) queueItemsUrl.searchParams.set("ticker", f.ticker);
+
+        const [monitorRes, queueRes, itemsRes] = await Promise.allSettled([
+          fetchJson("/stockflow/report_source/monitor/status"),
+          fetchJson("/stockflow/report_source/docs/queue/status"),
+          fetchJson(queueItemsUrl.toString()),
+        ]);
+
+        let okCount = 0;
+        if (monitorRes.status === "fulfilled") {
+          renderMonitor(monitorRes.value);
+          okCount += 1;
+        } else {
+          monitorKv.innerHTML = `<div class="k">error</div><div class="v bad">${esc(String(monitorRes.reason && monitorRes.reason.message ? monitorRes.reason.message : monitorRes.reason))}</div>`;
+          monitorEvents.innerHTML = "";
+        }
+
+        if (queueRes.status === "fulfilled") {
+          renderQueue(queueRes.value);
+          okCount += 1;
+        } else {
+          queueKv.innerHTML = `<div class="k">error</div><div class="v bad">${esc(String(queueRes.reason && queueRes.reason.message ? queueRes.reason.message : queueRes.reason))}</div>`;
+          queueChips.innerHTML = "";
+          queueEvents.innerHTML = "";
+        }
+
+        if (itemsRes.status === "fulfilled") {
+          renderItems(itemsRes.value);
+          okCount += 1;
+        } else {
+          rows.innerHTML = `<tr><td colspan='11' class='bad'>items load failed: ${esc(String(itemsRes.reason && itemsRes.reason.message ? itemsRes.reason.message : itemsRes.reason))}</td></tr>`;
+        }
+
+        const elapsed = Math.max(1, Math.round((Date.now() - startedAt.getTime()) / 10) / 100);
+        meta.textContent = `Loaded ${okCount}/3 blocks at ${new Date().toLocaleTimeString()} (${elapsed}s).`;
+      } catch (err) {
+        meta.textContent = `Load failed: ${String(err && err.message ? err.message : err)}`;
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function runDiscover() {
+      const f = readFilters();
+      const tickers = f.ticker ? [f.ticker] : [];
+      if (!tickers.length) {
+        meta.textContent = "请输入 ticker，再执行 discover run once。";
+        tickerInput.focus();
+        return;
+      }
+      setBusy(true);
+      try {
+        meta.textContent = `Running discover for ${tickers.join(", ")} ...`;
+        const payload = {
+          tickers,
+          force_source_refresh: false,
+          max_links_per_source: 120,
+        };
+        const data = await fetchJson("/stockflow/report_source/docs/discover/run_once", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const discovered = Number(data && data.discovered || 0);
+        const updated = Number(data && data.updated || 0);
+        meta.textContent = `Discover finished. discovered=${discovered}, updated=${updated}.`;
+      } catch (err) {
+        meta.textContent = `Discover failed: ${String(err && err.message ? err.message : err)}`;
+      } finally {
+        setBusy(false);
+        await loadAll(true);
+      }
+    }
+
+    async function runAnalyzeNext() {
+      setBusy(true);
+      try {
+        meta.textContent = "Analyzing next queued document ...";
+        const data = await fetchJson("/stockflow/report_source/docs/queue/analyze_next", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ use_ai: true }),
+        });
+        if (data && data.message === "no_queued_documents") {
+          meta.textContent = "Analyze next done: no queued documents.";
+        } else {
+          const item = data && data.item ? data.item : {};
+          meta.textContent = `Analyze next done: ${String(item.ticker || "-")} ${String(item.doc_type || "-")} ${String(item.status || "")}`;
+        }
+      } catch (err) {
+        meta.textContent = `Analyze next failed: ${String(err && err.message ? err.message : err)}`;
+      } finally {
+        setBusy(false);
+        await loadAll(true);
+      }
+    }
+
+    async function runMonitorOnce() {
+      setBusy(true);
+      try {
+        meta.textContent = "Running URL monitor once ...";
+        const data = await fetchJson("/stockflow/report_source/monitor/run_once", {
+          method: "POST",
+        });
+        const changes = Number(data && data.changes || 0);
+        const checked = Number(data && data.checked_urls || 0);
+        meta.textContent = `Monitor run once done: checked=${checked}, changes=${changes}.`;
+      } catch (err) {
+        meta.textContent = `Monitor run once failed: ${String(err && err.message ? err.message : err)}`;
+      } finally {
+        setBusy(false);
+        await loadAll(true);
+      }
+    }
+
+    async function analyzeDoc(docId) {
+      const id = String(docId || "").trim();
+      if (!id) return;
+      setBusy(true);
+      try {
+        meta.textContent = `Analyzing doc ${id} ...`;
+        const data = await fetchJson(`/stockflow/report_source/docs/queue/analyze/${encodeURIComponent(id)}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ use_ai: true }),
+        });
+        const item = data && data.item ? data.item : {};
+        meta.textContent = `Analyze done: ${String(item.ticker || "-")} ${String(item.doc_type || "-")} ${String(item.status || "")}`;
+      } catch (err) {
+        meta.textContent = `Analyze doc failed: ${String(err && err.message ? err.message : err)}`;
+      } finally {
+        setBusy(false);
+        await loadAll(true);
+      }
+    }
+    window.analyzeDoc = analyzeDoc;
+
+    function setAutoRefresh(enabled) {
+      if (enabled) {
+        if (autoTimer) return;
+        autoTimer = setInterval(() => {
+          loadAll(true);
+        }, AUTO_REFRESH_MS);
+        autoRefreshBtn.textContent = "Auto Refresh: On";
+      } else {
+        if (!autoTimer) return;
+        clearInterval(autoTimer);
+        autoTimer = null;
+        autoRefreshBtn.textContent = "Auto Refresh: Off";
+      }
+    }
+
+    refreshBtn.addEventListener("click", () => loadAll(false));
+    discoverBtn.addEventListener("click", runDiscover);
+    analyzeNextBtn.addEventListener("click", runAnalyzeNext);
+    monitorRunBtn.addEventListener("click", runMonitorOnce);
+    autoRefreshBtn.addEventListener("click", () => {
+      setAutoRefresh(!autoTimer);
+      if (autoTimer) {
+        loadAll(true);
+      }
+    });
+    tickerInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") loadAll(false);
+    });
+    statusSelect.addEventListener("change", () => loadAll(true));
+    limitInput.addEventListener("input", renderLimitTip);
+    limitInput.addEventListener("change", () => loadAll(true));
+    window.addEventListener("beforeunload", () => setAutoRefresh(false));
+
+    tickerInput.value = DEFAULT_TICKER;
+    statusSelect.value = DEFAULT_STATUS;
+    limitInput.value = String(DEFAULT_LIMIT);
+    renderLimitTip();
+    loadAll(false);
+  </script>
+</body>
+</html>
+"""
+    html = html.replace("__DEFAULT_TICKER_JSON__", default_ticker_json)
+    html = html.replace("__DEFAULT_STATUS_JSON__", default_status_json)
+    html = html.replace("__DEFAULT_LIMIT_JSON__", default_limit_json)
     return HTMLResponse(content=html)
 
 

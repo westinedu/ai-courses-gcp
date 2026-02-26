@@ -47,6 +47,7 @@ from google.cloud import storage
 
 from report_source import (
     ReportSourceService,
+    register_report_source_doc_pipeline_routes,
     register_report_source_portal_routes,
     register_report_source_monitor_routes,
     start_report_source_monitor,
@@ -74,6 +75,14 @@ REPORT_SOURCE_MAX_CANDIDATES = int(os.environ.get("REPORT_SOURCE_MAX_CANDIDATES"
 REPORT_SOURCE_MONITOR_STATE_FILE = os.environ.get(
     "REPORT_SOURCE_MONITOR_STATE_FILE",
     str(Path(DATA_DIR) / "report_source_monitor_state.json"),
+)
+REPORT_SOURCE_DOC_QUEUE_STATE_FILE = os.environ.get(
+    "REPORT_SOURCE_DOC_QUEUE_STATE_FILE",
+    str(Path(DATA_DIR) / "report_source_doc_queue_state.json"),
+)
+REPORT_SOURCE_DOC_ARTIFACT_DIR = os.environ.get(
+    "REPORT_SOURCE_DOC_ARTIFACT_DIR",
+    str(Path(DATA_DIR) / "report_source_doc_artifacts"),
 )
 tz = pytz.timezone(ENGINE_TZ)
 # Create FastAPI app
@@ -2119,6 +2128,13 @@ register_report_source_monitor_routes(
     get_next_earnings_date=_fetch_next_earnings_date_from_trading_service,
     get_today_date=lambda: datetime.now(tz).date(),
     state_file_path=REPORT_SOURCE_MONITOR_STATE_FILE,
+)
+
+register_report_source_doc_pipeline_routes(
+    app,
+    get_report_source_service=_get_report_source_service,
+    state_file_path=REPORT_SOURCE_DOC_QUEUE_STATE_FILE,
+    artifact_dir=REPORT_SOURCE_DOC_ARTIFACT_DIR,
 )
 
 

@@ -60,6 +60,9 @@ financial_engine/
 | `REPORT_SOURCE_MONITOR_NORMAL_INTERVAL_MINUTES` | `normal_mode=interval` 时的间隔（分钟） | `10080` |
 | `REPORT_SOURCE_MONITOR_TICKERS` | 监听 ticker 列表（逗号分隔，未设则使用 `default_tickers`） | `""` |
 | `REPORT_SOURCE_MONITOR_STATE_FILE` | 监听状态文件路径（本地） | `data/report_source_monitor_state.json` |
+| `REPORT_SOURCE_DOC_QUEUE_STATE_FILE` | 文档级队列状态文件（本地） | `data/report_source_doc_queue_state.json` |
+| `REPORT_SOURCE_DOC_ARTIFACT_DIR` | 文档解析与分析产物目录（本地） | `data/report_source_doc_artifacts` |
+| `REPORT_SOURCE_EXTRACTION_MODEL` | 文档结构化抽取模型（可选，默认同 `REPORT_SOURCE_AI_MODEL`） | `gemini-1.5-flash-002` |
 
 > **建议**：生产环境通过 Cloud Run 的 `--set-env-vars` 或 Secret Manager 配置。
 
@@ -187,6 +190,18 @@ docker run -p 8080:8080 \
   `{"enabled":true,"earnings_day_interval_minutes":60,"normal_mode":"weekly"}`
 - `POST /stockflow/report_source/monitor/run_once`  
   手动执行一次监听（立即抓取官方 URL 并检测页面变化）。
+
+### 文档级发现与深度分析（Report Source Doc Pipeline）
+- `POST /stockflow/report_source/docs/discover/run_once`  
+  从已验证 IR/Reports/SEC 官方链接发现新文档并入队（PR/8-K/10-Q/10-K 等）。
+- `GET /stockflow/report_source/docs/queue/status`  
+  查看队列统计（按状态/文档类型/lane）。
+- `GET /stockflow/report_source/docs/queue/items?status=queued&ticker=NVDA`  
+  查看具体队列项。
+- `POST /stockflow/report_source/docs/queue/analyze/{doc_id}`  
+  对指定文档执行深度分析（规则抽取 + 可选 Vertex AI 抽取）。
+- `POST /stockflow/report_source/docs/queue/analyze_next`  
+  按优先级分析下一个待处理文档。
 
 ### 本地结果回灌到 GCS（给 StockFlow 直接使用）
 - 本地缓存文件位置：`GCP/financial_engine/data/*_report_source.json`
