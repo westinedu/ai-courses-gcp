@@ -45,7 +45,13 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from google.cloud import storage
 
-from report_source import ReportSourceService, register_report_source_portal_routes
+from report_source import (
+    ReportSourceService,
+    register_report_source_portal_routes,
+    register_report_source_monitor_routes,
+    start_report_source_monitor,
+    stop_report_source_monitor,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -65,6 +71,10 @@ ENGINE_TZ = os.environ.get("ENGINE_TZ", "America/Los_Angeles")
 REPORT_SOURCE_PREFIX = os.environ.get("REPORT_SOURCE_PREFIX", "report_sources")
 REPORT_SOURCE_CACHE_TTL_SECONDS = int(os.environ.get("REPORT_SOURCE_CACHE_TTL_SECONDS", "86400"))
 REPORT_SOURCE_MAX_CANDIDATES = int(os.environ.get("REPORT_SOURCE_MAX_CANDIDATES", "24"))
+REPORT_SOURCE_MONITOR_STATE_FILE = os.environ.get(
+    "REPORT_SOURCE_MONITOR_STATE_FILE",
+    str(Path(DATA_DIR) / "report_source_monitor_state.json"),
+)
 tz = pytz.timezone(ENGINE_TZ)
 # Create FastAPI app
 app = FastAPI(
@@ -1691,6 +1701,12 @@ async def startup_event():
     # scheduler.start()
     # logger.info("Scheduler started successfully. Financial data will update every 7 days.")
 
+    try:
+        monitor_state = start_report_source_monitor()
+        logger.info("report_source monitor startup: %s", monitor_state.get("message"))
+    except Exception as exc:
+        logger.warning("failed to start report_source monitor: %s", exc)
+
     logger.info("Application startup complete. Data updates will be handled by explicit API calls or scheduled jobs (if enabled).")
 
 @app.on_event("shutdown")
@@ -1703,6 +1719,10 @@ async def shutdown_event():
     if scheduler:
         scheduler.shutdown()
         logger.info("Scheduler shutdown.")
+    try:
+        stop_report_source_monitor()
+    except Exception:
+        pass
     global _report_source_service
     if _report_source_service is not None:
         try:
@@ -2090,6 +2110,15 @@ register_report_source_portal_routes(
     app,
     default_tickers=default_tickers,
     get_report_source_service=_get_report_source_service,
+)
+
+register_report_source_monitor_routes(
+    app,
+    default_tickers=default_tickers,
+    get_report_source_service=_get_report_source_service,
+    get_next_earnings_date=_fetch_next_earnings_date_from_trading_service,
+    get_today_date=lambda: datetime.now(tz).date(),
+    state_file_path=REPORT_SOURCE_MONITOR_STATE_FILE,
 )
 
 

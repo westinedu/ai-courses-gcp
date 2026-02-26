@@ -53,6 +53,13 @@ financial_engine/
 | `REPORT_SOURCE_GOOGLE_API_KEY` | （可选）Google Programmable Search API Key，用于补充候选 URL | `""` |
 | `REPORT_SOURCE_GOOGLE_CX` | （可选）Google Programmable Search Engine CX | `""` |
 | `REPORT_SOURCE_HTTPX_LOG_LEVEL` | `httpx` 日志级别（`INFO/WARNING/ERROR`）；默认 `INFO`（打印逐条请求） | `INFO` |
+| `REPORT_SOURCE_MONITOR_ENABLED` | 是否开启官方财报 URL 监听线程（`1/true` 启用） | `0` |
+| `REPORT_SOURCE_MONITOR_RUN_ON_STARTUP` | 启动后是否立即执行一次监听 | `1` |
+| `REPORT_SOURCE_MONITOR_EARNINGS_DAY_INTERVAL_MINUTES` | 财报日轮询间隔（分钟） | `60` |
+| `REPORT_SOURCE_MONITOR_NORMAL_MODE` | 非财报日模式：`off` / `weekly` / `interval` | `off` |
+| `REPORT_SOURCE_MONITOR_NORMAL_INTERVAL_MINUTES` | `normal_mode=interval` 时的间隔（分钟） | `10080` |
+| `REPORT_SOURCE_MONITOR_TICKERS` | 监听 ticker 列表（逗号分隔，未设则使用 `default_tickers`） | `""` |
+| `REPORT_SOURCE_MONITOR_STATE_FILE` | 监听状态文件路径（本地） | `data/report_source_monitor_state.json` |
 
 > **建议**：生产环境通过 Cloud Run 的 `--set-env-vars` 或 Secret Manager 配置。
 
@@ -171,6 +178,15 @@ docker run -p 8080:8080 \
   获取已缓存目录（优先 GCS，失败回退本地 `data/`）。
 - `GET /report_source/catalog`  
   内置可视化目录页，可直接浏览、批量刷新、单条刷新（用于人工快速验收）。
+
+### 官方 URL 事件监听（Report Source Monitor）
+- `GET /stockflow/report_source/monitor/status`  
+  查看监听器配置、最近运行结果、最近事件。
+- `POST /stockflow/report_source/monitor/config`  
+  动态更新监听配置。示例：
+  `{"enabled":true,"earnings_day_interval_minutes":60,"normal_mode":"weekly"}`
+- `POST /stockflow/report_source/monitor/run_once`  
+  手动执行一次监听（立即抓取官方 URL 并检测页面变化）。
 
 ### 本地结果回灌到 GCS（给 StockFlow 直接使用）
 - 本地缓存文件位置：`GCP/financial_engine/data/*_report_source.json`
