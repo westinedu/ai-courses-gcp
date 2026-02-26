@@ -1776,7 +1776,38 @@ async def report_source_pipeline_monitor_page(
       min-height: 32px;
       padding: 6px 10px;
       font-size: 11px;
+      color: #fff;
+      border-color: transparent;
     }
+    .actions .btn.is-disabled,
+    .actions .btn[disabled] {
+      color: #94a3b8;
+      background: #e5e7eb;
+      border-color: #cbd5e1;
+      box-shadow: none;
+      opacity: 1;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .btn-act-analyze {
+      background: #2563eb;
+      border-color: #1d4ed8;
+      box-shadow: 0 4px 12px rgba(37, 99, 235, .25);
+    }
+    .btn-act-analyze:hover { background: #1d4ed8; }
+    .btn-act-view {
+      background: #059669;
+      border-color: #047857;
+      box-shadow: 0 4px 12px rgba(5, 150, 105, .25);
+    }
+    .btn-act-view:hover { background: #047857; }
+    .btn-act-source {
+      background: #d97706;
+      border-color: #b45309;
+      box-shadow: 0 4px 12px rgba(217, 119, 6, .24);
+    }
+    .btn-act-source:hover { background: #b45309; }
+    .actions a.btn { text-decoration: none; }
     .home-link {
       margin-left: auto;
     }
@@ -1843,7 +1874,7 @@ async def report_source_pipeline_monitor_page(
           <th style="width:130px;">discovered</th>
           <th style="width:130px;">last analyzed</th>
           <th>notes</th>
-          <th style="width:120px;">action</th>
+          <th style="width:240px;">action</th>
         </tr>
       </thead>
       <tbody id="rows"></tbody>
@@ -2026,6 +2057,14 @@ async def report_source_pipeline_monitor_page(
       }
       rows.innerHTML = items.map((item) => {
         const docId = String(item && item.doc_id ? item.doc_id : "");
+        const sourceUrl = String(item && item.url ? item.url : "");
+        const hasAnalysis = Boolean(item && item.analysis_path);
+        const analysisLink = hasAnalysis
+          ? `<a class="btn btn-act-view" href="/stockflow/report_source/docs/queue/analysis/${encodeURIComponent(docId)}" target="_blank" rel="noopener">View Analysis</a>`
+          : `<button class="btn is-disabled" type="button" disabled title="尚未生成 analysis">View Analysis</button>`;
+        const sourceLink = sourceUrl
+          ? `<a class="btn btn-act-source" href="${esc(sourceUrl)}" target="_blank" rel="noopener">Open Source</a>`
+          : `<button class="btn is-disabled" type="button" disabled>Open Source</button>`;
         const notes = [];
         if (item && item.source_kind) notes.push(`source=${item.source_kind}`);
         if (item && item.last_error) notes.push(`error=${item.last_error}`);
@@ -2047,7 +2086,9 @@ async def report_source_pipeline_monitor_page(
             <td class="small">${esc(noteText || "-")}</td>
             <td>
               <div class="actions">
-                <button class="btn btn-ghost" type="button" onclick="analyzeDoc('${esc(docId)}')">Analyze</button>
+                <button class="btn btn-act-analyze" type="button" onclick="analyzeDoc('${esc(docId)}')">Analyze</button>
+                ${analysisLink}
+                ${sourceLink}
               </div>
             </td>
           </tr>

@@ -520,6 +520,38 @@ class ReportSourceDocumentPipeline:
             "items": filtered[: max(1, min(limit, 500))],
         }
 
+    def get_item(self, doc_id: str) -> Dict[str, Any]:
+        did = str(doc_id or "").strip()
+        if not did:
+            raise KeyError("doc_id is required")
+        with self._lock:
+            item = self._items.get(did)
+        if not isinstance(item, dict):
+            raise KeyError(f"doc_id not found: {did}")
+        return dict(item)
+
+    def get_analysis(self, doc_id: str) -> Dict[str, Any]:
+        item = self.get_item(doc_id)
+        path = str(item.get("analysis_path") or "").strip()
+        if not path:
+            raise FileNotFoundError(f"analysis artifact not found for doc_id: {doc_id}")
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"analysis artifact path does not exist: {path}")
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as exc:
+            raise RuntimeError(f"failed to parse analysis artifact: {exc}")
+        if not isinstance(payload, dict):
+            raise RuntimeError("analysis artifact is not a JSON object")
+        return {
+            "doc_id": str(doc_id),
+            "item": item,
+            "analysis_path": path,
+            "analysis": payload,
+        }
+
     def _write_analysis_artifact(self, ticker: str, doc_id: str, payload: Dict[str, Any]) -> str:
         t_dir = self._artifact_dir / _norm_ticker(ticker)
         t_dir.mkdir(parents=True, exist_ok=True)
@@ -726,6 +758,29 @@ async def report_source_doc_analyze_next(payload: AnalyzeDocRequest) -> Dict[str
         return await asyncio.to_thread(pipeline.analyze_next, use_ai=bool(payload.use_ai))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"failed to analyze next doc: {exc}")
+
+
+@router.get("/stockflow/report_source/docs/queue/item/{doc_id}", summary="查看单个队列文档项")
+async def report_source_doc_queue_item(doc_id: str) -> Dict[str, Any]:
+    pipeline = _get_pipeline()
+    try:
+        item = await asyncio.to_thread(pipeline.get_item, str(doc_id))
+        return {"ok": True, "item": item}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/stockflow/report_source/docs/queue/analysis/{doc_id}", summary="查看已分析文档产物")
+async def report_source_doc_queue_analysis(doc_id: str) -> Dict[str, Any]:
+    pipeline = _get_pipeline()
+    try:
+        return await asyncio.to_thread(pipeline.get_analysis, str(doc_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 def register_report_source_doc_pipeline_routes(
