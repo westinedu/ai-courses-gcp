@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse, urlunparse
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from .service import ReportSourceService
@@ -118,6 +119,43 @@ def _looks_like_access_challenge(title: str, text: str) -> bool:
         "access denied",
     ]
     return any(m in t for m in markers)
+
+
+def _content_type_to_ext(content_type: str) -> str:
+    c = str(content_type or "").lower()
+    if "application/pdf" in c:
+        return ".pdf"
+    if "text/html" in c or "application/xhtml+xml" in c:
+        return ".html"
+    if "application/json" in c:
+        return ".json"
+    if "text/plain" in c:
+        return ".txt"
+    if "application/xml" in c or "text/xml" in c:
+        return ".xml"
+    if "application/zip" in c:
+        return ".zip"
+    return ""
+
+
+def _url_to_ext(url: str) -> str:
+    parsed = urlparse(str(url or ""))
+    suffix = Path(parsed.path or "").suffix.lower()
+    if not suffix:
+        return ""
+    if len(suffix) > 8:
+        return ""
+    return suffix
+
+
+def _is_text_like(content_type: str, path: str) -> bool:
+    c = str(content_type or "").lower()
+    if c.startswith("text/"):
+        return True
+    if any(x in c for x in ["json", "xml", "javascript", "xhtml"]):
+        return True
+    suffix = Path(path).suffix.lower()
+    return suffix in {".txt", ".html", ".htm", ".json", ".xml", ".csv", ".md"}
 
 
 def _extract_metric_sentence(text: str, keywords: List[str]) -> str:
@@ -288,12 +326,15 @@ class ReportSourceDocumentPipeline:
         get_report_source_service: Callable[[], ReportSourceService],
         state_file_path: str,
         artifact_dir: str,
+        raw_dir: str,
     ) -> None:
         self._get_report_source_service = get_report_source_service
         self._state_path = Path(state_file_path).resolve()
         self._artifact_dir = Path(artifact_dir).resolve()
+        self._raw_dir = Path(raw_dir).resolve()
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         self._artifact_dir.mkdir(parents=True, exist_ok=True)
+        self._raw_dir.mkdir(parents=True, exist_ok=True)
         self._lock = Lock()
         self._items: Dict[str, Dict[str, Any]] = {}
         self._events: List[Dict[str, Any]] = []
@@ -495,6 +536,7 @@ class ReportSourceDocumentPipeline:
                 "ai_extractor_configured": self._extractor.is_configured(),
                 "state_file": str(self._state_path),
                 "artifact_dir": str(self._artifact_dir),
+                "raw_dir": str(self._raw_dir),
                 "recent_events": self._events[-30:],
             }
 
@@ -552,6 +594,65 @@ class ReportSourceDocumentPipeline:
             "analysis": payload,
         }
 
+    def get_raw(self, doc_id: str) -> Dict[str, Any]:
+        item = self.get_item(doc_id)
+        path = str(item.get("raw_path") or "").strip()
+        if not path:
+            raise FileNotFoundError(f"raw artifact not found for doc_id: {doc_id}")
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"raw artifact path does not exist: {path}")
+
+        payload: Dict[str, Any] = {
+            "doc_id": str(doc_id),
+            "item": item,
+            "raw_path": path,
+            "raw_content_type": str(item.get("raw_content_type") or ""),
+            "raw_size_bytes": int(item.get("raw_size_bytes") or 0),
+            "raw_sha256": str(item.get("raw_sha256") or ""),
+        }
+        if _is_text_like(payload["raw_content_type"], path):
+            try:
+                preview = p.read_text(encoding="utf-8", errors="ignore")[:5000]
+                payload["preview_text"] = preview
+            except Exception:
+                payload["preview_text"] = ""
+        return payload
+
+    def _write_raw_artifact(
+        self,
+        *,
+        ticker: str,
+        doc_id: str,
+        content_type: str,
+        final_url: str,
+        raw_bytes: bytes,
+        fallback_text: str,
+    ) -> Dict[str, Any]:
+        t_dir = self._raw_dir / _norm_ticker(ticker)
+        t_dir.mkdir(parents=True, exist_ok=True)
+
+        normalized_type = str(content_type or "").split(";")[0].strip().lower()
+        ext = _content_type_to_ext(normalized_type) or _url_to_ext(final_url) or ".bin"
+        if not raw_bytes:
+            raw_bytes = str(fallback_text or "").encode("utf-8", errors="ignore")
+            if ext == ".bin":
+                ext = ".txt"
+            if not normalized_type:
+                normalized_type = "text/plain"
+
+        path = t_dir / f"{doc_id}{ext}"
+        with path.open("wb") as f:
+            f.write(raw_bytes)
+
+        return {
+            "raw_path": str(path),
+            "raw_content_type": normalized_type or "application/octet-stream",
+            "raw_size_bytes": int(len(raw_bytes)),
+            "raw_sha256": hashlib.sha256(raw_bytes).hexdigest() if raw_bytes else "",
+            "raw_saved_at": _utc_iso_now(),
+        }
+
     def _write_analysis_artifact(self, ticker: str, doc_id: str, payload: Dict[str, Any]) -> str:
         t_dir = self._artifact_dir / _norm_ticker(ticker)
         t_dir.mkdir(parents=True, exist_ok=True)
@@ -580,7 +681,7 @@ class ReportSourceDocumentPipeline:
 
         service = self._get_report_source_service()
         url = str(item.get("url") or "")
-        snap = service.fetcher.fetch_page(url)
+        snap = service.fetcher.fetch_page(url, include_raw=True)
         if not snap:
             with self._lock:
                 item["status"] = "failed"
@@ -591,6 +692,14 @@ class ReportSourceDocumentPipeline:
 
         text = str(snap.text or "").strip()
         title = str(snap.title or "").strip()
+        raw_meta = self._write_raw_artifact(
+            ticker=str(item.get("ticker") or ""),
+            doc_id=doc_id,
+            content_type=str(snap.content_type or ""),
+            final_url=str(snap.final_url or url),
+            raw_bytes=bytes(snap.raw_bytes or b""),
+            fallback_text=f"title: {title}\n\n{text}",
+        )
         if _looks_like_access_challenge(title=title, text=text):
             with self._lock:
                 item["status"] = "failed"
@@ -599,6 +708,7 @@ class ReportSourceDocumentPipeline:
                 item["title"] = title
                 item["content_type"] = snap.content_type
                 item["final_url"] = snap.final_url
+                item.update(raw_meta)
                 self._events.append(
                     {
                         "type": "analyze_blocked",
@@ -641,6 +751,7 @@ class ReportSourceDocumentPipeline:
                 "content_type": snap.content_type,
                 "title": title,
             },
+            "raw": raw_meta,
             "heuristic": heuristic,
             "ai": ai_result,
             "final": ai_result if isinstance(ai_result, dict) else heuristic,
@@ -655,6 +766,7 @@ class ReportSourceDocumentPipeline:
             item["title"] = title
             item["content_type"] = snap.content_type
             item["final_url"] = snap.final_url
+            item.update(raw_meta)
             self._events.append(
                 {
                     "type": "analyze",
@@ -783,18 +895,40 @@ async def report_source_doc_queue_analysis(doc_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@router.get("/stockflow/report_source/docs/queue/raw/{doc_id}", summary="查看或下载已抓取原始文档")
+async def report_source_doc_queue_raw(
+    doc_id: str,
+    download: int = Query(0, ge=0, le=1, description="1=返回原始文件下载流"),
+) -> Any:
+    pipeline = _get_pipeline()
+    try:
+        payload = await asyncio.to_thread(pipeline.get_raw, str(doc_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    if int(download or 0) == 1:
+        path = str(payload.get("raw_path") or "")
+        media_type = str(payload.get("raw_content_type") or "").strip() or "application/octet-stream"
+        return FileResponse(path=path, media_type=media_type, filename=Path(path).name)
+    return payload
+
+
 def register_report_source_doc_pipeline_routes(
     app: Any,
     *,
     get_report_source_service: Callable[[], ReportSourceService],
     state_file_path: str,
     artifact_dir: str,
+    raw_dir: str,
 ) -> None:
     global _DOC_PIPELINE, _ROUTER_REGISTERED
     _DOC_PIPELINE = ReportSourceDocumentPipeline(
         get_report_source_service=get_report_source_service,
         state_file_path=state_file_path,
         artifact_dir=artifact_dir,
+        raw_dir=raw_dir,
     )
     if _ROUTER_REGISTERED:
         return

@@ -1763,6 +1763,45 @@ async def report_source_pipeline_monitor_page(
       font-size: 11px;
       color: #64748b;
     }
+    .notes-cell {
+      min-width: 260px;
+      max-width: 360px;
+    }
+    .note-details {
+      margin: 0;
+    }
+    .note-details summary {
+      cursor: pointer;
+      list-style: none;
+      outline: none;
+    }
+    .note-details summary::-webkit-details-marker {
+      display: none;
+    }
+    .note-brief {
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      white-space: normal;
+      font-size: 11px;
+      line-height: 1.35;
+      color: #64748b;
+    }
+    .note-full {
+      margin-top: 6px;
+      max-height: 140px;
+      overflow: auto;
+      border: 1px solid #dbe3ef;
+      border-radius: 8px;
+      background: #f8fafc;
+      padding: 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 11px;
+      line-height: 1.35;
+      color: #334155;
+    }
     .ok { color: var(--green); }
     .bad { color: var(--red); }
     .warn { color: var(--amber); }
@@ -1807,6 +1846,12 @@ async def report_source_pipeline_monitor_page(
       box-shadow: 0 4px 12px rgba(217, 119, 6, .24);
     }
     .btn-act-source:hover { background: #b45309; }
+    .btn-act-raw {
+      background: #0d9488;
+      border-color: #0f766e;
+      box-shadow: 0 4px 12px rgba(13, 148, 136, .25);
+    }
+    .btn-act-raw:hover { background: #0f766e; }
     .actions a.btn { text-decoration: none; }
     .home-link {
       margin-left: auto;
@@ -1873,8 +1918,8 @@ async def report_source_pipeline_monitor_page(
           <th style="width:66px;">attempts</th>
           <th style="width:130px;">discovered</th>
           <th style="width:130px;">last analyzed</th>
-          <th>notes</th>
-          <th style="width:240px;">action</th>
+          <th style="width:320px;">notes</th>
+          <th style="width:340px;">action</th>
         </tr>
       </thead>
       <tbody id="rows"></tbody>
@@ -2016,6 +2061,7 @@ async def report_source_pipeline_monitor_page(
         <div class="k">AI extractor configured</div><div class="v ${payload && payload.ai_extractor_configured ? "ok" : "warn"}">${esc(boolText(Boolean(payload && payload.ai_extractor_configured)))}</div>
         <div class="k">state file</div><div class="v mono">${esc(payload && payload.state_file ? payload.state_file : "n/a")}</div>
         <div class="k">artifact dir</div><div class="v mono">${esc(payload && payload.artifact_dir ? payload.artifact_dir : "n/a")}</div>
+        <div class="k">raw dir</div><div class="v mono">${esc(payload && payload.raw_dir ? payload.raw_dir : "n/a")}</div>
       `;
       const chips = [
         ...queueMapToChips("status", byStatus),
@@ -2059,19 +2105,44 @@ async def report_source_pipeline_monitor_page(
         const docId = String(item && item.doc_id ? item.doc_id : "");
         const sourceUrl = String(item && item.url ? item.url : "");
         const hasAnalysis = Boolean(item && item.analysis_path);
+        const hasRaw = Boolean(item && item.raw_path);
         const analysisLink = hasAnalysis
           ? `<a class="btn btn-act-view" href="/stockflow/report_source/docs/queue/analysis/${encodeURIComponent(docId)}" target="_blank" rel="noopener">View Analysis</a>`
           : `<button class="btn is-disabled" type="button" disabled title="尚未生成 analysis">View Analysis</button>`;
+        const rawLink = hasRaw
+          ? `<a class="btn btn-act-raw" href="/stockflow/report_source/docs/queue/raw/${encodeURIComponent(docId)}?download=1" target="_blank" rel="noopener">View Raw</a>`
+          : `<button class="btn is-disabled" type="button" disabled title="尚未落盘 raw 文件">View Raw</button>`;
         const sourceLink = sourceUrl
           ? `<a class="btn btn-act-source" href="${esc(sourceUrl)}" target="_blank" rel="noopener">Open Source</a>`
           : `<button class="btn is-disabled" type="button" disabled>Open Source</button>`;
-        const notes = [];
-        if (item && item.source_kind) notes.push(`source=${item.source_kind}`);
-        if (item && item.last_error) notes.push(`error=${item.last_error}`);
-        if (item && item.analysis_summary) notes.push(`summary=${item.analysis_summary}`);
-        if (item && item.analysis_path) notes.push(`artifact=${item.analysis_path}`);
-        if (item && item.url) notes.push(`url=${item.url}`);
-        const noteText = notes.join(" | ");
+        const briefParts = [];
+        const detailLines = [];
+        if (item && item.source_kind) {
+          briefParts.push(`source=${item.source_kind}`);
+          detailLines.push(`source_kind: ${item.source_kind}`);
+        }
+        if (item && item.last_error) {
+          briefParts.push(`error=${item.last_error.replace(/^RuntimeError:\\s*/i, "")}`);
+          detailLines.push(`last_error: ${item.last_error}`);
+        }
+        if (item && item.analysis_summary) {
+          briefParts.push(`summary=${String(item.analysis_summary).slice(0, 90)}`);
+          detailLines.push(`analysis_summary: ${item.analysis_summary}`);
+        }
+        if (item && item.raw_size_bytes != null && Number(item.raw_size_bytes) > 0) {
+          const kb = (Number(item.raw_size_bytes) / 1024).toFixed(1);
+          briefParts.push(`raw=${kb}KB`);
+          detailLines.push(`raw_size_bytes: ${item.raw_size_bytes}`);
+        }
+        if (item && item.analysis_path) detailLines.push(`analysis_path: ${item.analysis_path}`);
+        if (item && item.raw_path) detailLines.push(`raw_path: ${item.raw_path}`);
+        if (item && item.url) detailLines.push(`url: ${item.url}`);
+
+        const briefText = briefParts.join(" | ") || "No extra notes";
+        const detailText = detailLines.join("\\n");
+        const noteHtml = detailText
+          ? `<details class="note-details"><summary class="note-brief" title="${esc(briefText)}">${esc(briefText)}</summary><pre class="note-full">${esc(detailText)}</pre></details>`
+          : `<div class="note-brief">${esc(briefText)}</div>`;
         return `
           <tr>
             <td class="mono" title="${esc(docId)}">${esc(shortId(docId))}</td>
@@ -2083,11 +2154,12 @@ async def report_source_pipeline_monitor_page(
             <td>${esc(String(item && item.attempts != null ? item.attempts : 0))}</td>
             <td>${esc(fmtTime(item && item.discovered_at))}</td>
             <td>${esc(fmtTime(item && item.last_analyzed_at))}</td>
-            <td class="small">${esc(noteText || "-")}</td>
+            <td class="notes-cell">${noteHtml}</td>
             <td>
               <div class="actions">
                 <button class="btn btn-act-analyze" type="button" onclick="analyzeDoc('${esc(docId)}')">Analyze</button>
                 ${analysisLink}
+                ${rawLink}
                 ${sourceLink}
               </div>
             </td>

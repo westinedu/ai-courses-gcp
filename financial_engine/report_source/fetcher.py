@@ -74,10 +74,17 @@ def _normalize_ddg_url(href: str) -> str:
 
 
 class ReportSourceFetcher:
-    def __init__(self, timeout_seconds: float = 8.0, max_html_chars: int = 300_000, max_text_chars: int = 20_000) -> None:
+    def __init__(
+        self,
+        timeout_seconds: float = 8.0,
+        max_html_chars: int = 300_000,
+        max_text_chars: int = 20_000,
+        max_raw_bytes: int = 5_000_000,
+    ) -> None:
         self.timeout_seconds = timeout_seconds
         self.max_html_chars = max_html_chars
         self.max_text_chars = max_text_chars
+        self.max_raw_bytes = max(100_000, int(max_raw_bytes))
         self.google_api_key = (
             os.environ.get("REPORT_SOURCE_GOOGLE_API_KEY")
             or os.environ.get("GOOGLE_SEARCH_API_KEY")
@@ -97,13 +104,19 @@ class ReportSourceFetcher:
     def close(self) -> None:
         self._client.close()
 
-    def fetch_page(self, url: str) -> PageSnapshot | None:
+    def fetch_page(self, url: str, *, include_raw: bool = False) -> PageSnapshot | None:
         try:
             response = self._client.get(url)
         except Exception:
             return None
 
         content_type = (response.headers.get("content-type") or "").lower()
+        raw_bytes = b""
+        if include_raw:
+            try:
+                raw_bytes = bytes(response.content[: self.max_raw_bytes])
+            except Exception:
+                raw_bytes = b""
         body = ""
         if "text/html" in content_type or "application/xhtml+xml" in content_type or not content_type:
             body = response.text[: self.max_html_chars]
@@ -128,6 +141,7 @@ class ReportSourceFetcher:
             title=title,
             text=text,
             links=links,
+            raw_bytes=raw_bytes,
         )
 
     def search_candidates(self, query: str, limit: int = 10) -> List[str]:

@@ -14,6 +14,7 @@ class PageSnapshot:
     title: str
     text: str
     links: List[str] = field(default_factory=list)
+    raw_bytes: bytes = field(default=b"", repr=False)
 
 
 @dataclass

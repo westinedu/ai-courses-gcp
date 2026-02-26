@@ -62,6 +62,7 @@ financial_engine/
 | `REPORT_SOURCE_MONITOR_STATE_FILE` | 监听状态文件路径（本地） | `data/report_source_monitor_state.json` |
 | `REPORT_SOURCE_DOC_QUEUE_STATE_FILE` | 文档级队列状态文件（本地） | `data/report_source_doc_queue_state.json` |
 | `REPORT_SOURCE_DOC_ARTIFACT_DIR` | 文档解析与分析产物目录（本地） | `data/report_source_doc_artifacts` |
+| `REPORT_SOURCE_DOC_RAW_DIR` | 文档原始抓取文件目录（本地，HTML/PDF 等） | `data/report_source_doc_raw` |
 | `REPORT_SOURCE_EXTRACTION_MODEL` | 文档结构化抽取模型（可选，默认同 `REPORT_SOURCE_AI_MODEL`） | `gemini-1.5-flash-002` |
 
 > **建议**：生产环境通过 Cloud Run 的 `--set-env-vars` 或 Secret Manager 配置。
@@ -202,6 +203,10 @@ docker run -p 8080:8080 \
   对指定文档执行深度分析（规则抽取 + 可选 Vertex AI 抽取）。
 - `POST /stockflow/report_source/docs/queue/analyze_next`  
   按优先级分析下一个待处理文档。
+- `GET /stockflow/report_source/docs/queue/raw/{doc_id}`  
+  查看原始抓取文件元数据与文本预览（`?download=1` 可直接下载/打开原始文件）。
+- `GET /stockflow/report_source/docs/queue/analysis/{doc_id}`  
+  查看该文档的分析产物 JSON（含 heuristic/AI 结构化结果）。
 
 ### 本地结果回灌到 GCS（给 StockFlow 直接使用）
 - 本地缓存文件位置：`GCP/financial_engine/data/*_report_source.json`

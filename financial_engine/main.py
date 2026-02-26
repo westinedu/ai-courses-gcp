@@ -84,6 +84,10 @@ REPORT_SOURCE_DOC_ARTIFACT_DIR = os.environ.get(
     "REPORT_SOURCE_DOC_ARTIFACT_DIR",
     str(Path(DATA_DIR) / "report_source_doc_artifacts"),
 )
+REPORT_SOURCE_DOC_RAW_DIR = os.environ.get(
+    "REPORT_SOURCE_DOC_RAW_DIR",
+    str(Path(DATA_DIR) / "report_source_doc_raw"),
+)
 tz = pytz.timezone(ENGINE_TZ)
 # Create FastAPI app
 app = FastAPI(
@@ -2135,6 +2139,7 @@ register_report_source_doc_pipeline_routes(
     get_report_source_service=_get_report_source_service,
     state_file_path=REPORT_SOURCE_DOC_QUEUE_STATE_FILE,
     artifact_dir=REPORT_SOURCE_DOC_ARTIFACT_DIR,
+    raw_dir=REPORT_SOURCE_DOC_RAW_DIR,
 )
 
 
