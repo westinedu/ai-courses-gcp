@@ -1473,9 +1473,44 @@ def update_earnings_cache_job(tickers: List[str]) -> None:
 # -----------------------------
 scheduler: Optional[BackgroundScheduler] = None
 default_tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "AMD", "JPM", "V", "BRK-B", "WMT", "COST", "KO", "NKE", "LLY", "UNH", "CAT", "DIS", "NFLX"] # 默认关注的股票列表
+
+
+def _default_report_source_us_tickers_file() -> str:
+    """
+    Resolve a safe default path for us_tickers.json without assuming a fixed repo depth.
+    This avoids import-time crashes in container paths like /app/main.py.
+    """
+    here = Path(__file__).resolve()
+    candidates: List[Path] = []
+
+    # Common dev-repo layout: .../AWS/ticker-manager/us_tickers.json
+    for parent in [here.parent, *list(here.parents)]:
+        candidates.append(parent / "AWS" / "ticker-manager" / "us_tickers.json")
+
+    # Common runtime fallbacks.
+    candidates.append(Path(DATA_DIR) / "us_tickers.json")
+    candidates.append(here.parent / "us_tickers.json")
+
+    seen = set()
+    deduped: List[Path] = []
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+
+    for path in deduped:
+        if path.exists():
+            return str(path)
+
+    # If none exist, still return a stable non-crashing fallback path.
+    return str((here.parent / "us_tickers.json").resolve())
+
+
 _REPORT_SOURCE_US_TICKERS_FILE = os.environ.get(
     "REPORT_SOURCE_US_TICKERS_FILE",
-    str(Path(__file__).resolve().parents[2] / "AWS" / "ticker-manager" / "us_tickers.json"),
+    _default_report_source_us_tickers_file(),
 )
 _REPORT_SOURCE_BATCH_STATE_FILE = os.environ.get(
     "REPORT_SOURCE_BATCH_STATE_FILE",
