@@ -34,7 +34,8 @@ MARKETS_CONFIG_BLOB = (os.environ.get("HEATMAP_MARKETS_CONFIG_BLOB") or "").stri
 WRITE_HISTORY = str(os.environ.get("HEATMAP_WRITE_HISTORY", "0")).strip().lower() in {"1", "true", "yes"}
 CRON_TOKEN = (os.environ.get("HEATMAP_CRON_TOKEN") or "").strip()
 DEFAULT_MARKET = (os.environ.get("HEATMAP_DEFAULT_MARKET") or "hk").strip().lower() or "hk"
-QUOTE_TIMEOUT_SECONDS = max(4, int(os.environ.get("HEATMAP_QUOTE_TIMEOUT_SECONDS", "18")))
+# Soft timeout for one market refresh. 0 means no soft timeout.
+QUOTE_TIMEOUT_SECONDS = max(0, int(os.environ.get("HEATMAP_QUOTE_TIMEOUT_SECONDS", "90")))
 
 LOCAL_CONFIG_PATH = Path(__file__).resolve().parent / "config" / "markets.json"
 
@@ -189,16 +190,29 @@ def _save_snapshot_to_gcs(market: str, snapshot: Dict[str, Any]) -> None:
     client = _storage()
     if client is None:
         return
-    body = json.dumps(snapshot, ensure_ascii=False).encode("utf-8")
     bucket = client.bucket(GCS_BUCKET_NAME)
 
     latest_path = _latest_blob_path(market)
-    bucket.blob(latest_path).upload_from_string(body, content_type="application/json")
+    latest_blob = bucket.blob(latest_path)
 
     if WRITE_HISTORY:
-        generated_at = str(snapshot.get("generatedAt") or _utc_now_iso())
-        history_path = _history_blob_path(market, generated_at)
-        bucket.blob(history_path).upload_from_string(body, content_type="application/json")
+        # Archive previous latest snapshot (if any) to history/<generatedAt>.json
+        # before overwriting latest.json.
+        try:
+            if latest_blob.exists(client=client):
+                previous_raw = latest_blob.download_as_text()
+                previous_data = json.loads(previous_raw)
+                if isinstance(previous_data, dict):
+                    prev_generated_at = str(previous_data.get("generatedAt") or "").strip() or _utc_now_iso()
+                    history_path = _history_blob_path(market, prev_generated_at)
+                    history_blob = bucket.blob(history_path)
+                    if not history_blob.exists(client=client):
+                        history_blob.upload_from_string(previous_raw.encode("utf-8"), content_type="application/json")
+        except Exception as exc:
+            logger.warning("Failed archiving previous latest snapshot for market=%s: %s", market, exc)
+
+    body = json.dumps(snapshot, ensure_ascii=False).encode("utf-8")
+    latest_blob.upload_from_string(body, content_type="application/json")
 
 
 def _extract_fast_info(ticker_obj: Any) -> Dict[str, Any]:
@@ -333,9 +347,10 @@ def _build_market_snapshot(market: str) -> Dict[str, Any]:
     nodes: List[Dict[str, Any]] = []
     failures: List[str] = []
 
-    # yfinance has internal timeout handling; network spikes should not block too long.
+    # yfinance has internal timeout handling; keep a soft timeout to avoid very long tail.
     start = time.time()
-    for row in constituents:
+    timed_out = False
+    for idx, row in enumerate(constituents):
         symbol = row["ticker"]
         try:
             point = _fetch_one_quote(
@@ -353,8 +368,17 @@ def _build_market_snapshot(market: str) -> Dict[str, Any]:
             failures.append(symbol)
 
         # Soft timeout guard to avoid long-tail hangs from upstream data vendor.
-        if time.time() - start > QUOTE_TIMEOUT_SECONDS:
-            logger.warning("Quote collection soft-timeout reached for market=%s after %ss", market, QUOTE_TIMEOUT_SECONDS)
+        if QUOTE_TIMEOUT_SECONDS and (time.time() - start > QUOTE_TIMEOUT_SECONDS):
+            timed_out = True
+            remaining = [item["ticker"] for item in constituents[idx + 1 :]]
+            failures.extend(remaining)
+            logger.warning(
+                "Quote collection soft-timeout reached for market=%s after %ss (collected=%s skipped=%s)",
+                market,
+                QUOTE_TIMEOUT_SECONDS,
+                len(nodes),
+                len(remaining),
+            )
             break
 
     if not nodes:
@@ -392,6 +416,8 @@ def _build_market_snapshot(market: str) -> Dict[str, Any]:
         "requestedCount": len(constituents),
         "failedCount": len(failures),
         "failedTickers": failures,
+        "timedOut": timed_out,
+        "timeoutSeconds": QUOTE_TIMEOUT_SECONDS,
         "totalValue": round(total_value, 2),
         "sectors": sectors,
         "nodes": nodes,

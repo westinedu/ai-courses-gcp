@@ -44,7 +44,8 @@ uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 | `GCS_BUCKET_NAME` | 快照存储桶（为空则不写 GCS） | `""` |
 | `HEATMAP_GCS_PREFIX` | GCS 快照前缀 | `heatmap/snapshots` |
 | `HEATMAP_CACHE_TTL_SECONDS` | 内存缓存秒数 | `300` |
-| `HEATMAP_WRITE_HISTORY` | 是否写历史快照 | `0` |
+| `HEATMAP_QUOTE_TIMEOUT_SECONDS` | 单市场抓价软超时秒数（`0`=关闭） | `90` |
+| `HEATMAP_WRITE_HISTORY` | 是否写历史快照（写入前先归档上一版 latest） | `1` |
 | `HEATMAP_DEFAULT_MARKET` | 默认市场 | `hk` |
 | `HEATMAP_MARKETS_CONFIG_BLOB` | 可选：GCS 配置路径 | `""` |
 | `HEATMAP_CRON_TOKEN` | 可选：刷新接口鉴权 token | `""` |

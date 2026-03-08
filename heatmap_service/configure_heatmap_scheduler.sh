@@ -17,7 +17,7 @@ Environment overrides:
   SERVICE_NAME        (default: heatmap-service)
   HEATMAP_SERVICE_URL (default: auto-discover from Cloud Run service URL)
   JOB_NAME            (default: heatmap-refresh-hk)
-  SCHEDULE            (default: */5 * * * 1-5)
+  SCHEDULE            (default: */5 9-16 * * 1-5)
   TIME_ZONE           (default: Asia/Hong_Kong)
   MARKETS_CSV         (default: hk) e.g. hk,ks
   HEATMAP_CRON_TOKEN  (optional)
@@ -33,7 +33,7 @@ SCHEDULER_REGION="${SCHEDULER_REGION:-${REGION}}"
 SERVICE_NAME="${SERVICE_NAME:-heatmap-service}"
 SERVICE_URL="${HEATMAP_SERVICE_URL:-https://heatmap-service-805008808538.us-central1.run.app}"
 JOB_NAME="${JOB_NAME:-heatmap-refresh-hk}"
-SCHEDULE="${SCHEDULE:-*/5 * * * 1-5}"
+SCHEDULE="${SCHEDULE:-*/5 9-16 * * 1-5}"
 TIME_ZONE="${TIME_ZONE:-Asia/Hong_Kong}"
 MARKETS_CSV="${MARKETS_CSV:-hk}"
 HEATMAP_CRON_TOKEN="${HEATMAP_CRON_TOKEN:-13ca1a26a3b842c409820331638cc05ebc561c9ca2165c4e9ece09f0c7fd999f}"
@@ -119,15 +119,16 @@ COMMON_ARGS=(
   --time-zone "${TIME_ZONE}"
   --uri "${TARGET_URI}"
   --http-method POST
-  --headers "${HEADERS}"
   --message-body "${MESSAGE_BODY}"
 )
 
 if gcloud scheduler jobs describe "${JOB_NAME}" --project "${PROJECT_ID}" --location "${SCHEDULER_REGION}" >/dev/null 2>&1; then
-  gcloud scheduler jobs update http "${JOB_NAME}" "${COMMON_ARGS[@]}"
+  gcloud scheduler jobs update http "${JOB_NAME}" "${COMMON_ARGS[@]}" \
+    --update-headers "${HEADERS}"
   echo "Updated scheduler job: ${JOB_NAME}"
 else
-  gcloud scheduler jobs create http "${JOB_NAME}" "${COMMON_ARGS[@]}"
+  gcloud scheduler jobs create http "${JOB_NAME}" "${COMMON_ARGS[@]}" \
+    --headers "${HEADERS}"
   echo "Created scheduler job: ${JOB_NAME}"
 fi
 
