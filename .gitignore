@@ -7,8 +7,8 @@ node_modules/
 .cache/
 
 # GCP / Secret
-*.json
 !example*.json
+!heatmap_service/config/markets.json
 
 # Logs
 *.log

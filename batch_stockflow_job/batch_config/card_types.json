@@ -1,0 +1,74 @@
+[
+  {
+    "name": "news_card",
+    "enabled": true
+  },
+  {
+    "name": "earnings_card",
+    "enabled": true
+  },
+  {
+    "name": "trading_card",
+    "enabled": true
+  },
+  {
+    "name": "news_bull_bear_card",
+    "enabled": true
+  },
+  {
+    "name": "daily_summary_card",
+    "enabled": true
+  },
+  {
+    "name": "macro_fed_funds_rate_card",
+    "enabled": true
+  },
+  {
+    "name": "investment_outlook_card",
+    "enabled": true
+  },
+  {
+      "name": "real_estate_investing_card",
+      "enabled": true
+  },
+  {
+      "name": "crypto_finance_card",
+      "enabled": true
+  },
+  {
+      "name": "gold_investing_card",
+      "enabled": true
+  },
+  {
+      "name": "oil_energy_card",
+      "enabled": true
+  },
+  {
+      "name": "us_treasury_bonds_card",
+      "enabled": true
+  },
+  {
+    "name": "etf_innovation_card",
+    "enabled": true
+  },
+  {
+    "name": "jack_ma_card",
+    "enabled": true
+  },
+  {
+    "name": "cathie_wood_card",
+    "enabled": true
+  },
+  {
+    "name": "donald_trump_card",
+    "enabled": true
+  },
+  {
+    "name": "elon_musk_card",
+    "enabled": true
+  },
+  {
+      "name": "jensen_huang_card",
+      "enabled": true
+  }
+]

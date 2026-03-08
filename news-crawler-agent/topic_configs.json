@@ -1,0 +1,535 @@
+{
+    "fed_funds_rate": {
+        "topic_identifier": "Fed_Funds_Rate",
+        "topic_storage_path": "macro/fed_funds_rate",
+        "topic_group": "macro",
+        "news_type": "macro",
+        "rss_sources": [
+            "https://www.federalreserve.gov/feeds/press_monetary.xml",
+            "https://www.federalreserve.gov/feeds/press_all.xml",
+            "https://www.cnbc.com/id/10000664/device/rss/rss.html",
+            "https://rss.nytimes.com/services/xml/rss/nyt/Economy.xml",
+            "https://feeds.finance.yahoo.com/rss/2.0/headline?s=Federal%20Reserve&region=US&lang=en-US"
+        ],
+        "max_articles": 30,
+        "required_keywords": [
+            "Federal Reserve",
+            "Fed Funds Rate",
+            "Fed",
+            "interest rate",
+            "rate hike",
+            "rate cut",
+            "monetary policy",
+            "FOMC"
+        ],
+        "excluded_keywords": [
+            "FedEx",
+            "Federal Express"
+        ],
+        "min_content_length": 0,
+        "require_full_text": true,
+        "highlight_keywords": [
+            "Federal Reserve",
+            "Fed",
+            "interest rate",
+            "rate cut",
+            "monetary policy",
+            "inflation",
+            "tariff",
+            "treasury",
+            "yield",
+            "economic",
+            "fomc"
+        ]
+    },
+    "rate_vs_inflation": {
+        "topic_identifier": "Rate_vs_Inflation",
+        "topic_storage_path": "macro/rate_vs_inflation",
+        "topic_group": "macro",
+        "news_type": "macro",
+        "rss_sources": [
+            "https://finance.yahoo.com/news/rssindex",
+            "https://www.cnbc.com/id/10000664/device/rss/rss.html",
+            "https://rss.nytimes.com/services/xml/rss/nyt/Economy.xml",
+            "https://www.theguardian.com/business/economics/rss",
+            "https://feeds.bbci.co.uk/news/business/rss.xml"
+        ],
+        "max_articles": 30,
+        "required_keywords": [
+            "fed rate",
+            "interest rate",
+            "fund rate",            
+            "inflation",
+            "consumer price",
+            "cpi",
+            "core inflation"
+        ],
+        "excluded_keywords": [],
+        "min_content_length": 0,
+        "require_full_text": false,
+        "highlight_keywords": [
+            "rate",
+            "inflation",
+            "cpi",
+            "core inflation",
+            "yield"
+        ]
+    },
+    "Macro_heatmap": {
+        "topic_identifier": "Macro_heatmap",
+        "topic_storage_path": "macro/Macro_heatmap",
+        "topic_group": "macro",
+        "news_type": "macro",
+        "rss_sources": [
+            "https://www.cnbc.com/id/10000664/device/rss/rss.html"
+        ],
+        "max_articles": 30,
+        "required_keywords": [
+            "rate",
+            "central bank",
+            "policy",
+            "hike",
+            "cut"
+        ],
+        "excluded_keywords": [],
+        "min_content_length": 0,
+        "require_full_text": false,
+        "highlight_keywords": [
+            "rate",
+            "policy",
+            "central bank",
+            "hike",
+            "cut",
+            "yield"
+        ]
+    },
+    "macro_dashboard": {
+        "topic_identifier": "Macro_Dashboard",
+        "topic_storage_path": "macro/macro_dashboard",
+        "topic_group": "macro",
+        "news_type": "macro",
+        "rss_sources": [
+            "https://www.cnbc.com/id/10000664/device/rss/rss.html"
+        ],
+        "max_articles": 40,
+        "required_keywords": [
+            "economy",
+            "employment",
+            "gdp",
+            "inflation",
+            "policy",
+            "rate"
+        ],
+        "excluded_keywords": [],
+        "min_content_length": 0,
+        "require_full_text": false,
+        "highlight_keywords": [
+            "economy",
+            "gdp",
+            "inflation",
+            "employment",
+            "policy",
+            "rate"
+        ]
+    },
+    "etf_innovation": {
+        "topic_identifier": "ETF_Innovation",
+        "topic_storage_path": "investing/etf_innovation",
+        "topic_group": "investing",
+        "news_type": "investing",
+        "rss_sources": [
+            "https://feeds.finance.yahoo.com/rss/2.0/headline?s=ARKK&region=US&lang=en-US",
+            "https://feeds.finance.yahoo.com/rss/2.0/headline?s=VTI&region=US&lang=en-US"
+        ],
+        "max_articles": 25,
+        "required_keywords": [
+            "ETF",
+            "thematic ETF",
+            "smart beta",
+            "ESG ETF",
+            "leveraged ETF",
+            "inverse ETF",
+            "active ETF",
+            "crypto ETF",
+            "bond ETF",
+            "expense ratio"
+        ],
+        "excluded_keywords": [
+            "ETF vs mutual fund debate",
+            "ETF awards"
+        ],
+        "min_content_length": 0,
+        "require_full_text": false,
+        "highlight_keywords": [
+            "thematic",
+            "smart beta",
+            "esg",
+            "leveraged",
+            "inverse",
+            "active",
+            "crypto ETF",
+            "bond ETF",
+            "expense ratio",
+            "flows"
+        ]
+    },
+    "Wealth_Management": {
+        "topic_identifier": "Wealth_Management",
+        "topic_storage_path": "personal/Wealth_Management",
+        "rss_sources": [
+            "https://www.morningstar.com/rss/financial-planning",
+            "https://www.bloomberg.com/feeds/personal-finance",
+            "https://feeds.finance.yahoo.com/rss/2.0/headline?s=Personal%20Finance&region=US&lang=en-US"
+        ],
+        "max_articles": 30,
+        "required_keywords": [
+            "wealth management",
+            "financial planning",
+            "asset allocation",
+            "portfolio",
+            "retirement planning",
+            "estate planning",
+            "tax efficiency",
+            "robo-advisor",
+            "family office"
+        ],
+        "excluded_keywords": [
+            "weight management",
+            "health"
+        ],
+        "min_content_length": 0,
+        "require_full_text": true,
+        "highlight_keywords": [
+            "wealth",
+            "portfolio",
+            "allocation",
+            "retirement",
+            "estate",
+            "tax",
+            "robo-advisor",
+            "ETF",
+            "mutual fund",
+            "dividend",
+            "compound interest"
+        ]
+    },
+    "Personal_Finance_Tips": {
+        "topic_identifier": "Personal_Finance_Tips",
+        "topic_storage_path": "personal/Personal_Finance_Tips",
+        "rss_sources": [
+            "https://www.moneyunder30.com/feed",
+            "https://www.thepennyhoarder.com/feed",
+            "https://www.cnbc.com/id/10000664/device/rss/rss.html"
+        ],
+        "max_articles": 25,
+        "required_keywords": [
+            "budget",
+            "save money",
+            "emergency fund",
+            "side hustle",
+            "credit score",
+            "debt payoff",
+            "frugal living",
+            "automatic savings",
+            "50/30/20 rule",
+            "high-yield savings"
+        ],
+        "excluded_keywords": [
+            "budget fashion",
+            "budget phone"
+        ],
+        "min_content_length": 0,
+        "require_full_text": false,
+        "highlight_keywords": [
+            "budget",
+            "emergency fund",
+            "side hustle",
+            "credit score",
+            "debt",
+            "frugal",
+            "50/30/20",
+            "high-yield savings",
+            "compound interest",
+            "FIRE"
+        ]
+    },
+    "Stock_Picking": {
+        "topic_identifier": "Stock_Picking",
+        "topic_storage_path": "investing/Stock_Picking",
+        "rss_sources": [
+            "https://seekingalpha.com/feed.xml",
+            "https://www.fool.com/feeds/index.aspx",
+            "https://feeds.finance.yahoo.com/rss/2.0/headline?s=Stocks&region=US&lang=en-US"
+        ],
+        "max_articles": 40,
+        "required_keywords": [
+            "stock pick",
+            "equity research",
+            "valuation",
+            "earnings",
+            "growth stock",
+            "value stock",
+            "dividend aristocrat",
+            "blue chip",
+            "small cap",
+            "mid cap",
+            "moat",
+            "PEG ratio"
+        ],
+        "excluded_keywords": [
+            "chicken stock",
+            "stock photo"
+        ],
+        "min_content_length": 0,
+        "require_full_text": true,
+        "highlight_keywords": [
+            "valuation",
+            "P/E",
+            "PEG",
+            "moat",
+            "dividend",
+            "buybacks",
+            "earnings beat",
+            "guidance",
+            "blue chip",
+            "growth",
+            "value"
+        ]
+    },
+    "Crypto_Finance": {
+        "topic_identifier": "Crypto_Finance",
+        "topic_storage_path": "investing/Crypto_Finance",
+        "rss_sources": [
+            "https://cointelegraph.com/rss",
+            "https://decrypt.co/feed"
+        ],
+        "max_articles": 25,
+        "required_keywords": [
+            "bitcoin",
+            "ethereum",
+            "crypto",
+            "blockchain",
+            "DeFi",
+            "NFT",
+            "altcoin",
+            "stablecoin",
+            "halving",
+            "ETF"
+        ],
+        "excluded_keywords": [
+            "cryptography conference",
+            "crypto virus"
+        ],
+        "min_content_length": 0,
+        "require_full_text": false,
+        "highlight_keywords": [
+            "bitcoin",
+            "ethereum",
+            "blockchain",
+            "DeFi",
+            "NFT",
+            "altcoin",
+            "stablecoin",
+            "halving",
+            "ETF",
+            "regulation",
+            "CBDC"
+        ]
+    },
+    "Real_Estate_Investing": {
+        "topic_identifier": "Real_Estate_Investing",
+        "topic_storage_path": "investing/Real_Estate_Investing",
+        "rss_sources": [
+            "https://www.biggerpockets.com/blog/feed",
+            "https://www.reit.com/news/rss.xml",
+            "https://seekingalpha.com/tag/reits.xml"
+        ],
+        "max_articles": 30,
+        "required_keywords": [
+            "real estate investment",
+            "REIT",
+            "rental property",
+            "house hacking",
+            "cap rate",
+            "cash flow",
+            "appreciation",
+            "1031 exchange",
+            "property management",
+            "mortgage rates"
+        ],
+        "excluded_keywords": [
+            "real estate agent awards",
+            "home décor"
+        ],
+        "min_content_length": 0,
+        "require_full_text": true,
+        "highlight_keywords": [
+            "REIT",
+            "rental",
+            "cap rate",
+            "cash flow",
+            "appreciation",
+            "1031 exchange",
+            "mortgage rates",
+            "vacancy",
+            "leverage",
+            "property tax"
+        ]
+    },
+    "Investment_Outlook": {
+        "topic_identifier": "Investment_Outlook",
+        "topic_storage_path": "macro/Investment_Outlook",
+        "rss_sources": [
+            "https://www.cnbc.com/id/100727362/device/rss/rss.html",
+            "https://seekingalpha.com/market-outlook.xml"
+        ],
+        "max_articles": 25,
+        "required_keywords": [
+            "investment",
+            "stock",
+            "portfolio",
+            "asset allocation",
+            "dividend",
+            "market trends",
+            "wealth creation"
+        ],
+        "excluded_keywords": [
+            "sports betting",
+            "gambling"
+        ],
+        "min_content_length": 0,
+        "require_full_text": true,
+        "highlight_keywords": [
+            "investment",
+            "stock",
+            "portfolio",
+            "dividend",
+            "market trends",
+            "wealth creation",
+            "financial strategy"
+        ]
+    },
+    "Gold_Investing": {
+        "topic_identifier": "Gold_Investing",
+        "topic_storage_path": "commodities/Gold_Investing",
+        "rss_sources": [
+            "https://feeds.finance.yahoo.com/rss/2.0/headline?s=GLD&region=US&lang=en-US",
+            "https://feeds.finance.yahoo.com/rss/2.0/headline?s=IAU&region=US&lang=en-US",
+            "https://www.mining.com/rss/",
+            "https://seekingalpha.com/tag/gold.xml"
+        ],
+        "max_articles": 25,
+        "required_keywords": [
+            "gold",
+            "precious metals",
+            "gold price",
+            "gold ETF",
+            "GLD",
+            "IAU",
+            "spot gold",
+            "bullion",
+            "inflation hedge",
+            "safe haven"
+        ],
+        "excluded_keywords": [
+            "golden state",
+            "golden globe",
+            "gold medal"
+        ],
+        "min_content_length": 0,
+        "require_full_text": false,
+        "highlight_keywords": [
+            "gold price",
+            "spot gold",
+            "GLD",
+            "IAU",
+            "bullion",
+            "inflation hedge",
+            "safe haven",
+            "federal reserve",
+            "real yields",
+            "USD"
+        ]
+    },
+    "Oil_Energy": {
+        "topic_identifier": "Oil_Energy",
+        "topic_storage_path": "commodities/Oil_Energy",
+        "rss_sources": [
+            "https://www.energyvoice.com/oilandgas/feed/",
+            "https://feeds.finance.yahoo.com/rss/2.0/headline?s=CL%3DF&region=US&lang=en-US"
+        ],
+        "max_articles": 30,
+        "required_keywords": [
+            "crude oil",
+            "Brent",
+            "WTI",
+            "oil price",
+            "OPEC",
+            "OPEC+",
+            "shale",
+            "Strategic Petroleum Reserve",
+            "gasoline",
+            "energy ETF",
+            "USO",
+            "XLE"
+        ],
+        "excluded_keywords": [
+            "cooking oil",
+            "essential oil"
+        ],
+        "min_content_length": 0,
+        "require_full_text": false,
+        "highlight_keywords": [
+            "Brent",
+            "WTI",
+            "OPEC",
+            "shale",
+            "SPR",
+            "gasoline",
+            "USO",
+            "XLE",
+            "supply glut",
+            "demand destruction",
+            "geopolitical"
+        ]
+    },
+    "US_Treasury_Bonds": {
+        "topic_identifier": "US_Treasury_Bonds",
+        "topic_storage_path": "bonds/US_Treasury_Bonds",
+        "rss_sources": [
+            "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5ETNX&region=US&lang=en-US",
+            "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5ETYX&region=US&lang=en-US"
+        ],
+        "max_articles": 30,
+        "required_keywords": [
+            "treasury",
+            "bonds",
+            "notes",
+            "T-bill",
+            "T-bonds",
+            "T-bills",
+            "T-note",
+            "T-bond",
+            "yield curve",
+            "primary dealer",
+            "Fed balance sheet",
+            "QE",
+            "QT"
+        ],
+        "excluded_keywords": [
+            "treasury casino",
+            "treasury island"
+        ],
+        "min_content_length": 0,
+        "require_full_text": false,
+        "highlight_keywords": [
+            "yield curve",
+            "inversion",
+            "QE",
+            "QT",
+            "duration",
+            "real yields",
+            "breakeven"
+        ]
+    }
+}

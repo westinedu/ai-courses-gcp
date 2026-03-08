@@ -1,0 +1,175 @@
+[
+  {
+    "id": "Fed_Funds_Rate",
+    "category": "macro",
+    "card_types": [
+      "macro_fed_funds_rate_card"
+    ],
+    "run_engines": {
+      "news": true,
+      "financials": false,
+      "trading": false
+    }
+  },
+  {
+    "id": "Investment_Outlook",
+    "category": "investing",
+    "card_types": [
+      "investment_outlook_card"
+    ],
+    "run_engines": {
+      "news": true,
+      "financials": false,
+      "trading": false
+    }
+  },
+  {
+    "id": "ETF_Innovation",
+    "category": "investing",
+    "card_types": [
+      "etf_innovation_card"
+    ],
+    "run_engines": {
+      "news": true,
+      "financials": false,
+      "trading": false
+    }
+  },
+  {
+    "id": "Crypto_Finance",
+    "category": "investing",
+    "card_types": [
+      "crypto_finance_card"
+    ],
+    "run_engines": {
+      "news": true,
+      "financials": false,
+      "trading": false
+    }
+  },
+  {
+    "id": "Real_Estate_Investing",
+    "category": "investing",
+    "card_types": [
+      "real_estate_investing_card"
+    ],
+    "run_engines": {
+      "news": true,
+      "financials": false,
+      "trading": false
+    }
+  },
+  {
+    "id": "Gold_Investing",
+    "category": "commodities",
+    "card_types": [
+      "gold_investing_card"
+    ],
+    "run_engines": {
+      "news": true,
+      "financials": false,
+      "trading": false
+    }
+  },
+  {
+    "id": "Oil_Energy",
+    "category": "commodities",
+    "card_types": [
+      "oil_energy_card"
+    ],
+    "run_engines": {
+      "news": true,
+      "financials": false,
+      "trading": false
+    }
+  },
+  {
+    "id": "US_Treasury_Bonds",
+    "category": "bonds",
+    "card_types": [
+      "us_treasury_bonds_card"
+    ],
+    "run_engines": {
+      "news": true,
+      "financials": false,
+      "trading": false
+    }
+  },
+  {    
+    "id": "Jack_Ma",
+    "category": "celebrity",
+    "card_types": [
+      "jack_ma_card"
+    ],
+    "run_engines": {
+      "news": true,
+      "financials": false,
+      "trading": false
+    }
+  },
+  {
+    "id": "Cathie_Wood",
+    "category": "celebrity",
+    "card_types": [
+      "cathie_wood_card"
+    ],
+    "run_engines": {
+      "news": true,
+      "financials": false,
+      "trading": false
+    }
+  },
+  {
+    "id": "Donald_Trump",
+    "category": "celebrity",
+    "card_types": [
+      "donald_trump_card"
+    ],
+    "run_engines": {
+      "news": true,
+      "financials": false,
+      "trading": false
+    }
+  },    
+  {
+    "id": "Elon_Musk",
+    "category": "celebrity",
+    "card_types": [
+      "elon_musk_card"
+    ],
+    "run_engines": {
+      "news": true,
+      "financials": false,
+      "trading": false
+    }
+  },
+  {
+    "id": "Jensen_Huang",
+    "category": "celebrity",
+    "card_types": [
+      "jensen_huang_card"
+    ],
+    "run_engines": {
+      "news": true,
+      "financials": false,
+      "trading": false
+    }
+  },
+  {
+    "id": "equities_default",
+    "tickers_path": "batch_config/ticker_list.json",
+    "category": "equity",
+    "card_types": [
+      "news_card",
+      "earnings_card",
+      "trading_card",
+      "news_bull_bear_card",
+      "daily_summary_card"
+    ],
+    "run_engines": {
+      "news": true,
+      "financials": true,
+      "trading": true
+    }
+  }
+]

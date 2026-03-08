@@ -1,0 +1,25 @@
+{
+    "default": {
+        "backend": "openai",
+        "model_name": "gpt-5-nano"
+    },
+    "tasks": {
+        "_ask_agent": {
+            "backend": "openai",
+            "model_name": "gpt-5-nano"
+        },
+        "news_card": {
+            "model_name": "gpt-4.1-nano"
+        },
+        "earnings_card": {
+            "backend": "gemini_vertexai",
+            "model_name": "gemini-2.5-flash"
+        },
+        "trading_card": {
+            "model_name": "gpt-4o-mini"
+        },
+        "news_bull_bear_card": {
+            "model_name": "gpt-4.1-mini"
+        }
+    }
+}

@@ -1,0 +1,380 @@
+{
+    "Donald_Trump": {
+      "topic_identifier": "Donald_Trump",
+      "topic_storage_path": "celebrity/Donald_Trump",
+      "rss_sources": [
+        "https://www.whitehouse.gov/briefings-statements/feed/",
+        
+        "https://news.google.com/rss/search?q=%22Donald+Trump%22+AND+(economy+OR+policy+OR+trade+OR+stocks)&hl=en-US&gl=US&ceid=US:en",
+        "https://news.google.com/rss/search?q=%22Donald+Trump%22+AND+(Federal+Reserve+OR+interest+rates+OR+dollar)&hl=en-US&gl=US&ceid=US:en",
+        "https://news.google.com/rss/search?q=%22Donald+Trump%22+AND+(tariffs+OR+%22trade+war%22+OR+China)&hl=en-US&gl=US&ceid=US:en",
+        
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=DJT&region=US&lang=en-US",
+        "https://news.search.yahoo.com/rss?p=%22Donald+Trump%22+economic+policy",
+
+
+        "https://www.cnbc.com/id/10000113/device/rss/rss.html"
+      ],
+      "max_articles": 30,
+      "required_keywords": ["trump", "tariff", "trade war", "federal reserve", "stock market", "crypto", "dollar", "bond", "interest rate"],
+      "excluded_keywords": ["trumpet", "trump plaza", "ivana trump fashion"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["tariff", "trade war", "federal reserve", "stock market", "crypto", "dollar", "bond", "interest rate", "election", "policy"]
+    },
+    "Elon_Musk": {
+      "topic_identifier": "Elon_Musk",
+      "topic_storage_path": "celebrity/Elon_Musk",
+      "rss_sources": [
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=TSLA&region=US&lang=en-US"
+      ],
+      "max_articles": 30,
+      "required_keywords": ["musk", "tesla", "spacex", "neuralink", "xai", "ai", "robotaxi", "fsd", "cybertruck", "starlink", "crypto", "bitcoin", "dogecoin"],
+      "excluded_keywords": ["muskrat", "elon college"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["tesla", "spacex", "ai", "robotaxi", "fsd", "cybertruck", "starlink", "crypto", "bitcoin", "dogecoin", "market cap", "valuation"]
+    },
+    "Jensen_Huang": {
+      "topic_identifier": "Jensen_Huang",
+      "topic_storage_path": "celebrity/Jensen_Huang",
+      "rss_sources": [
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=NVDA&region=US&lang=en-US"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["jensen huang", "huang renxun", "nvidia", "ai chip", "gpu", "data center", "cuda", "blackwell", "h200", "ai factory"],
+      "excluded_keywords": ["nvidia car", "nvidia shield tv"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["nvidia", "ai chip", "gpu", "data center", "cuda", "blackwell", "h200", "ai factory", "market cap", "valuation", "earnings"]
+    },
+    "Warren_Buffett": {
+      "topic_identifier": "Warren_Buffett",
+      "topic_storage_path": "celebrity/Warren_Buffett",
+      "rss_sources": [
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=BRK-A&region=US&lang=en-US"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["warren buffett", "berkshire hathaway", "omaha", "annual letter", "value investing", "buyback", "cash pile", "apple stake", "bank stake"],
+      "excluded_keywords": ["buffet restaurant", "buffet party"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["berkshire hathaway", "omaha", "annual letter", "value investing", "buyback", "cash pile", "apple stake", "bank stake", "earnings", "book value"]
+    },
+    "Ray_Dalio": {
+      "topic_identifier": "Ray_Dalio",
+      "topic_storage_path": "celebrity/Ray_Dalio",
+      "rss_sources": [
+      ],
+      "max_articles": 25,
+      "required_keywords": ["ray dalio", "bridgewater", "principles", "debt crisis", "dollar crisis", "reserve currency", "china", "market cycle", "all weather", "pure alpha"],
+      "excluded_keywords": ["dalio painting", "dalio fashion"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["bridgewater", "principles", "debt crisis", "dollar crisis", "reserve currency", "china", "market cycle", "all weather", "pure alpha", "macro"]
+    },
+    "Cathie_Wood": {
+      "topic_identifier": "Cathie_Wood",
+      "topic_storage_path": "celebrity/Cathie_Wood",
+      "rss_sources": [
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=ARKK&region=US&lang=en-US"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["cathie wood", "ark invest", "arkk", "disruptive innovation", "tesla", "bitcoin", "genomics", "space", "3d printing", "autonomous"],
+      "excluded_keywords": ["cathie wood furniture"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["ark invest", "arkk", "disruptive innovation", "tesla", "bitcoin", "genomics", "space", "3d printing", "autonomous", "flows", "holdings"]
+    },
+    "Bill_Gates": {
+      "topic_identifier": "Bill_Gates",
+      "topic_storage_path": "celebrity/Bill_Gates",
+      "rss_sources": [
+        "https://www.gatesnotes.com/rss",
+        "https://www.gatesfoundation.org/rss",
+        "https://news.google.com/rss/search?q=%22Bill+Gates%22+OR+%22Gates+Foundation%22+OR+breakthrough+energy&hl=en-US&gl=US&ceid=US:en",
+        "https://www.reuters.com/business/rss",
+        "https://www.cnbc.com/investing/rss"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["bill gates", "gates foundation", "breakthrough energy", "climate", "pandemic", "vaccine", "microsoft", "buffett", "donation"],
+      "excluded_keywords": ["bill gates meme", "bill gates costume"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["gates foundation", "breakthrough energy", "climate", "pandemic", "vaccine", "microsoft", "buffett", "donation", "philanthropy"]
+    },
+    "Larry_Ellison": {
+      "topic_identifier": "Larry_Ellison",
+      "topic_storage_path": "celebrity/Larry_Ellison",
+      "rss_sources": [
+        "https://investor.oracle.com/rss/news-release.aspx",
+        "https://news.google.com/rss/search?q=%22Larry+Ellison%22+OR+Oracle+%22cloud+infrastructure%22&hl=en-US&gl=US&ceid=US:en",
+        "https://www.reuters.com/business/media-telecom/rss",
+        "https://www.cnbc.com/technology/rss"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["larry ellison", "oracle", "cloud infrastructure", "ai", "health", "island", "stake", "tesla", "board"],
+      "excluded_keywords": ["ellison travel", "ellison fashion"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["oracle", "cloud infrastructure", "ai", "health", "island", "stake", "tesla", "board", "market cap", "earnings"]
+    },
+    "Mark_Zuckerberg": {
+      "topic_identifier": "Mark_Zuckerberg",
+      "topic_storage_path": "celebrity/Mark_Zuckerberg",
+      "rss_sources": [
+        "https://about.fb.com/rss/",
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=META&region=US&lang=en-US"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["mark zuckerberg", "zuckerberg", "meta", "facebook", "metaverse", "VR", "AI", "threads", "instagram", "vr headset"],
+      "excluded_keywords": ["zuckerberg baby", "zuckerberg style"],
+      "min_content_length": 0,
+      "require_full_text": false,
+        "highlight_keywords": ["meta", "facebook", "metaverse", "VR", "AI", "threads", "instagram", "vr headset", "market cap", "earnings"]
+    },
+    "Jeff_Bezos": {
+      "topic_identifier": "Jeff_Bezos",
+      "topic_storage_path": "celebrity/Jeff_Bezos",
+      "rss_sources": [
+        "https://www.aboutamazon.com/rss",
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=AMZN&region=US&lang=en-US"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["jeff bezos", "bezos", "amazon", "blue origin", "washington post", "space", "delivery", "prime", "cloud", "AWS"],
+      "excluded_keywords": ["bezos car", "bezos fashion"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["amazon", "blue origin", "washington post", "space", "delivery", "prime", "cloud", "AWS", "market cap", "earnings"]
+    },
+    "Peter_Thiel": {
+      "topic_identifier": "Peter_Thiel",
+      "topic_storage_path": "celebrity/Peter_Thiel",
+      "rss_sources": [
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=PAYPAL&region=US&lang=en-US",
+        "https://news.google.com/rss/search?q=%22Peter+Thiel%22+OR+%22Palantir%22+OR+%22Founders+Fund%22&hl=en-US&gl=US&ceid=US:en",
+        "https://www.reuters.com/business/finance/rss",
+        "https://www.cnbc.com/technology/rss"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["peter thiel", "palantir", "founders fund", "paypal", "crypto", "bitcoin", "facebook", "vc", "venture capital", "libertarian"],
+      "excluded_keywords": ["thiel college", "thiel music"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["palantir", "founders fund", "paypal", "crypto", "bitcoin", "facebook", "vc", "venture capital", "libertarian", "IPO"]
+    },
+    "Sam_Altman": {
+      "topic_identifier": "Sam_Altman",
+      "topic_storage_path": "celebrity/Sam_Altman",
+      "rss_sources": [
+
+      ],
+      "max_articles": 25,
+      "required_keywords": ["sam altman", "openai", "gpt", "ai safety", "worldcoin", "yc", "y combinator", "startup", "funding", "valuation"],
+      "excluded_keywords": ["altman brothers", "altman fashion"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["openai", "gpt", "ai safety", "worldcoin", "yc", "y combinator", "startup", "funding", "valuation", "IPO"]
+    },
+    "Jamie_Dimon": {
+      "topic_identifier": "Jamie_Dimon",
+      "topic_storage_path": "celebrity/Jamie_Dimon",
+      "rss_sources": [
+        "https://investor.jpmorganchase.com/rss/news-release.aspx"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["jamie dimon", "jpmorgan", "consumer credit", "recession", "yield curve", "interest rate", "regulation", "capital", "stress test"],
+      "excluded_keywords": ["dimon fashion", "dimon art"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["jpmorgan", "consumer credit", "recession", "yield curve", "interest rate", "regulation", "capital", "stress test", "earnings"]
+    },
+    "Ken_Griffin": {
+      "topic_identifier": "Ken_Griffin",
+      "topic_storage_path": "celebrity/Ken_Griffin",
+      "rss_sources": [
+        "https://www.citadel.com/rss/news"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["ken griffin", "citadel", "market making", "short selling", "hedge fund", "quant", "algorithm", "volatility", "liquidity"],
+      "excluded_keywords": ["griffin hotel", "griffin fashion"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["citadel", "market making", "short selling", "hedge fund", "quant", "algorithm", "volatility", "liquidity", "earnings"]
+    },
+    "Lei_Jun": {
+      "topic_identifier": "Lei_Jun",
+      "topic_storage_path": "celebrity/Lei_Jun",
+      "rss_sources": [
+        "https://investor.xiaomi.com/rss/news-release.aspx",
+        "https://news.google.com/rss/search?q=%22Lei+Jun%22+OR+Xiaomi+%22electric+vehicle%22+OR+%22EV%22&hl=en-US&gl=US&ceid=US:en",
+        "https://www.reuters.com/business/autos-transportation/rss",
+        "https://www.cnbc.com/technology/rss"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["lei jun", "xiaomi", "electric vehicle", "ev", "smartphone", "mi", "redmi", "poco", "market share", "ipo"],
+      "excluded_keywords": ["lei jun fashion", "lei jun art"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["xiaomi", "electric vehicle", "ev", "smartphone", "mi", "redmi", "poco", "market share", "ipo", "valuation"]
+    },
+    "Colin_Huang": {
+      "topic_identifier": "Colin_Huang",
+      "topic_storage_path": "celebrity/Colin_Huang",
+      "rss_sources": [
+        "https://investor.pddholdings.com/rss/news-release.aspx",
+        "https://news.google.com/rss/search?q=%22Colin+Huang%22+OR+PDD+%22Temu%22+OR+%22agricultural%20innovation%22&hl=en-US&gl=US&ceid=US:en",
+        "https://www.reuters.com/business/media-telecom/rss",
+        "https://www.cnbc.com/technology/rss"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["colin huang", "pdd", "temu", "agricultural innovation", "e-commerce", "marketplace", "ipo", "valuation", "china"],
+      "excluded_keywords": ["huang painting", "huang fashion"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["pdd", "temu", "agricultural innovation", "e-commerce", "marketplace", "ipo", "valuation", "china", "earnings"]
+    },
+    "Zhong_ShanShan": {
+      "topic_identifier": "Zhong_ShanShan",
+      "topic_storage_path": "celebrity/Zhong_ShanShan",
+      "rss_sources": [
+        "https://investor.nongfushanquan.com/rss/news-release.aspx"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["zhong shanshan", "nongfu spring", "wantai", "beverage", "ipo", "valuation", "china", "richest", "billionaire"],
+      "excluded_keywords": ["zhong fashion", "zhong art"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["nongfu spring", "wantai", "beverage", "ipo", "valuation", "china", "richest", "billionaire", "earnings"]
+    },
+    "Jack_Ma": {
+      "topic_identifier": "Jack_Ma",
+      "topic_storage_path": "celebrity/Jack_Ma",
+      "rss_sources": [
+        "https://www.alizila.com/rss"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["jack ma", "alibaba", "ant group", "fintech", "e-commerce", "cloud", "ipo", "regulation", "china", "billionaire"],
+      "excluded_keywords": ["jack ma costume", "jack ma meme"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["alibaba", "ant group", "fintech", "e-commerce", "cloud", "ipo", "regulation", "china", "billionaire", "earnings"]
+    },
+    "Pony_Ma": {
+      "topic_identifier": "Pony_Ma",
+      "topic_storage_path": "celebrity/Pony_Ma",
+      "rss_sources": [
+        "https://www.tencent.com/en-us/rss/news.xml"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["pony ma", "tencent", "wechat", "gaming", "cloud", "ipo", "regulation", "china", "billionaire"],
+      "excluded_keywords": ["pony ma costume", "pony ma meme"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["tencent", "wechat", "gaming", "cloud", "ipo", "regulation", "china", "billionaire", "earnings"]
+    },
+    "William_Ding": {
+      "topic_identifier": "William_Ding",
+      "topic_storage_path": "celebrity/William_Ding",
+      "rss_sources": [
+        "https://investor.netease.com/rss/news-release.aspx"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["william ding", "netease", "gaming", "cloud music", "ipo", "regulation", "china", "billionaire"],
+      "excluded_keywords": ["ding fashion", "ding art"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["netease", "gaming", "cloud music", "ipo", "regulation", "china", "billionaire", "earnings"]
+    },
+    "Howard_Marks": {
+      "topic_identifier": "Howard_Marks",
+      "topic_storage_path": "celebrity/Howard_Marks",
+      "rss_sources": [
+        "https://www.oaktreecapital.com/rss/insights"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["howard marks", "oaktree", "memorandum", "market cycle", "risk", "credit", "high yield", "distressed", "value"],
+      "excluded_keywords": ["marks fashion", "marks art"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["oaktree", "memorandum", "market cycle", "risk", "credit", "high yield", "distressed", "value", "earnings"]
+    },
+    "Stanley_Druckenmiller": {
+      "topic_identifier": "Stanley_Druckenmiller",
+      "topic_storage_path": "celebrity/Stanley_Druckenmiller",
+      "rss_sources": [
+        "https://www.duqesne.com/rss/insights"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["stanley druckenmiller", "duquesne", "macro trading", "dollar", "treasury", "fed", "interest rate", "currency", "gold", "oil"],
+      "excluded_keywords": ["druckenmiller fashion", "druckenmiller art"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["duquesne", "macro trading", "dollar", "treasury", "fed", "interest rate", "currency", "gold", "oil", "earnings"]
+    },
+    "David_Tepper": {
+      "topic_identifier": "David_Tepper",
+      "topic_storage_path": "celebrity/David_Tepper",
+      "rss_sources": [
+        "https://www.appaloosamanagement.com/rss/insights"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["david tepper", "appaloosa", "hedge fund", "distressed", "high yield", "equity", "market outlook", "panthers", "steelers"],
+      "excluded_keywords": ["tepper fashion", "tepper art"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["appaloosa", "hedge fund", "distressed", "high yield", "equity", "market outlook", "panthers", "steelers", "earnings"]
+    },
+    "George_Soros": {
+      "topic_identifier": "George_Soros",
+      "topic_storage_path": "celebrity/George_Soros",
+      "rss_sources": [
+        "https://www.soros.org/rss"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["george soros", "soros", "open society", "reflexivity", "currency crisis", "hedge fund", "quantum fund", "philanthropy", "politics"],
+      "excluded_keywords": ["soros fashion", "soros art"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["open society", "reflexivity", "currency crisis", "hedge fund", "quantum fund", "philanthropy", "politics", "earnings"]
+    },
+    "Carl_Icahn": {
+      "topic_identifier": "Carl_Icahn",
+      "topic_storage_path": "celebrity/Carl_Icahn",
+      "rss_sources": [
+        "https://www.activistpost.com/rss"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["carl icahn", "icahn", "activist investor", "shareholder activism", "proxy fight", "board seat", "spin-off", "buyback", "dividend", "hedge fund"],
+      "excluded_keywords": ["icahn fashion", "icahn art"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["activist investor", "shareholder activism", "proxy fight", "board seat", "spin-off", "buyback", "dividend", "hedge fund", "earnings"]
+    },
+    "Daniel_Loeb": {
+      "topic_identifier": "Daniel_Loeb",
+      "topic_storage_path": "celebrity/Daniel_Loeb",
+      "rss_sources": [
+        "https://www.thirdpoint.com/rss/insights"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["daniel loeb", "third point", "activist investor", "shareholder activism", "proxy fight", "board seat", "spin-off", "buyback", "dividend", "hedge fund"],
+      "excluded_keywords": ["loeb fashion", "loeb art"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["third point", "activist investor", "shareholder activism", "proxy fight", "board seat", "spin-off", "buyback", "dividend", "hedge fund", "earnings"]
+    },
+    "Bill_Ackman": {
+      "topic_identifier": "Bill_Ackman",
+      "topic_storage_path": "celebrity/Bill_Ackman",
+      "rss_sources": [
+        "https://www.pershingsquare.com/rss/insights"
+      ],
+      "max_articles": 25,
+      "required_keywords": ["bill ackman", "pershing square", "activist investor", "shareholder activism", "proxy fight", "board seat", "spin-off", "buyback", "dividend", "hedge fund"],
+      "excluded_keywords": ["ackman fashion", "ackman art"],
+      "min_content_length": 0,
+      "require_full_text": false,
+      "highlight_keywords": ["pershing square", "activist investor", "shareholder activism", "proxy fight", "board seat", "spin-off", "buyback", "dividend", "hedge fund", "earnings"]
+    }
+}

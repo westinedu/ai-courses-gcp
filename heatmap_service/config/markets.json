@@ -1,0 +1,461 @@
+{
+  "hk": {
+    "code": "hk",
+    "name": "Hong Kong",
+    "timezone": "Asia/Hong_Kong",
+    "currency": "HKD",
+    "description": "Hang Seng Index constituents for heatmap snapshot (90 names, effective 2026-03-09).",
+    "constituents": [
+      {
+        "ticker": "0001.HK",
+        "name": "CK Hutchison",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "0002.HK",
+        "name": "CLP Holdings",
+        "sector": "Telecommunications Utilities"
+      },
+      {
+        "ticker": "0003.HK",
+        "name": "Hong Kong & China Gas",
+        "sector": "Telecommunications Utilities"
+      },
+      {
+        "ticker": "0005.HK",
+        "name": "HSBC Holdings",
+        "sector": "Financials"
+      },
+      {
+        "ticker": "0006.HK",
+        "name": "Power Assets",
+        "sector": "Telecommunications Utilities"
+      },
+      {
+        "ticker": "0012.HK",
+        "name": "Henderson Land",
+        "sector": "Real Estate"
+      },
+      {
+        "ticker": "0016.HK",
+        "name": "Sun Hung Kai Properties",
+        "sector": "Real Estate"
+      },
+      {
+        "ticker": "0027.HK",
+        "name": "Galaxy Entertainment",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "0066.HK",
+        "name": "MTR Corporation",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "0101.HK",
+        "name": "Hang Lung Properties",
+        "sector": "Real Estate"
+      },
+      {
+        "ticker": "0175.HK",
+        "name": "Geely Auto",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "0241.HK",
+        "name": "Alibaba Health",
+        "sector": "Health Care"
+      },
+      {
+        "ticker": "0267.HK",
+        "name": "CITIC",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "0285.HK",
+        "name": "BYD Electronic",
+        "sector": "Information Technology"
+      },
+      {
+        "ticker": "0288.HK",
+        "name": "WH Group",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "0291.HK",
+        "name": "China Resources Beer",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "0300.HK",
+        "name": "Midea Group",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "0316.HK",
+        "name": "Orient Overseas Intl",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "0322.HK",
+        "name": "Tingyi",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "0386.HK",
+        "name": "Sinopec Corp",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "0388.HK",
+        "name": "HKEX",
+        "sector": "Financials"
+      },
+      {
+        "ticker": "0669.HK",
+        "name": "Techtronic Industries",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "0688.HK",
+        "name": "China Overseas Land",
+        "sector": "Real Estate"
+      },
+      {
+        "ticker": "0700.HK",
+        "name": "Tencent",
+        "sector": "Information Technology"
+      },
+      {
+        "ticker": "0728.HK",
+        "name": "China Telecom",
+        "sector": "Telecommunications Utilities"
+      },
+      {
+        "ticker": "0762.HK",
+        "name": "China Unicom",
+        "sector": "Telecommunications Utilities"
+      },
+      {
+        "ticker": "0823.HK",
+        "name": "Link REIT",
+        "sector": "Real Estate"
+      },
+      {
+        "ticker": "0836.HK",
+        "name": "China Resources Power",
+        "sector": "Telecommunications Utilities"
+      },
+      {
+        "ticker": "0857.HK",
+        "name": "PetroChina",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "0868.HK",
+        "name": "Xinyi Glass",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "0883.HK",
+        "name": "CNOOC",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "0939.HK",
+        "name": "China Construction Bank",
+        "sector": "Financials"
+      },
+      {
+        "ticker": "0941.HK",
+        "name": "China Mobile",
+        "sector": "Telecommunications Utilities"
+      },
+      {
+        "ticker": "0960.HK",
+        "name": "Longfor Group",
+        "sector": "Real Estate"
+      },
+      {
+        "ticker": "0968.HK",
+        "name": "Xinyi Solar",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "0981.HK",
+        "name": "SMIC",
+        "sector": "Information Technology"
+      },
+      {
+        "ticker": "0992.HK",
+        "name": "Lenovo Group",
+        "sector": "Information Technology"
+      },
+      {
+        "ticker": "1024.HK",
+        "name": "Kuaishou",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "1038.HK",
+        "name": "CK Infrastructure",
+        "sector": "Telecommunications Utilities"
+      },
+      {
+        "ticker": "1044.HK",
+        "name": "Hengan Intl",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "1088.HK",
+        "name": "China Shenhua Energy",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "1093.HK",
+        "name": "CSPC Pharmaceutical",
+        "sector": "Health Care"
+      },
+      {
+        "ticker": "1099.HK",
+        "name": "Sinopharm",
+        "sector": "Health Care"
+      },
+      {
+        "ticker": "1109.HK",
+        "name": "China Resources Land",
+        "sector": "Real Estate"
+      },
+      {
+        "ticker": "1113.HK",
+        "name": "CK Asset",
+        "sector": "Real Estate"
+      },
+      {
+        "ticker": "1177.HK",
+        "name": "Sino Biopharm",
+        "sector": "Health Care"
+      },
+      {
+        "ticker": "1209.HK",
+        "name": "China Resources Mixc",
+        "sector": "Real Estate"
+      },
+      {
+        "ticker": "1211.HK",
+        "name": "BYD",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "1299.HK",
+        "name": "AIA Group",
+        "sector": "Financials"
+      },
+      {
+        "ticker": "1378.HK",
+        "name": "China Hongqiao",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "1398.HK",
+        "name": "ICBC",
+        "sector": "Financials"
+      },
+      {
+        "ticker": "1801.HK",
+        "name": "Innovent Biologics",
+        "sector": "Health Care"
+      },
+      {
+        "ticker": "1810.HK",
+        "name": "Xiaomi",
+        "sector": "Information Technology"
+      },
+      {
+        "ticker": "1876.HK",
+        "name": "Budweiser APAC",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "1928.HK",
+        "name": "Sands China",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "1929.HK",
+        "name": "Chow Tai Fook",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "1997.HK",
+        "name": "Wharf REIC",
+        "sector": "Real Estate"
+      },
+      {
+        "ticker": "2015.HK",
+        "name": "Li Auto",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "2020.HK",
+        "name": "ANTA Sports",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "2057.HK",
+        "name": "ZTO Express",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "2269.HK",
+        "name": "WuXi Biologics",
+        "sector": "Health Care"
+      },
+      {
+        "ticker": "2313.HK",
+        "name": "Shenzhou Intl",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "2318.HK",
+        "name": "Ping An",
+        "sector": "Financials"
+      },
+      {
+        "ticker": "2319.HK",
+        "name": "Mengniu Dairy",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "2331.HK",
+        "name": "Li Ning",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "2359.HK",
+        "name": "WuXi AppTec",
+        "sector": "Health Care"
+      },
+      {
+        "ticker": "2382.HK",
+        "name": "Sunny Optical",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "2388.HK",
+        "name": "BOC Hong Kong",
+        "sector": "Financials"
+      },
+      {
+        "ticker": "2618.HK",
+        "name": "JD Logistics",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "2628.HK",
+        "name": "China Life",
+        "sector": "Financials"
+      },
+      {
+        "ticker": "2688.HK",
+        "name": "ENN Energy",
+        "sector": "Telecommunications Utilities"
+      },
+      {
+        "ticker": "2899.HK",
+        "name": "Zijin Mining",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "3690.HK",
+        "name": "Meituan",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "3692.HK",
+        "name": "Hansoh Pharma",
+        "sector": "Health Care"
+      },
+      {
+        "ticker": "3750.HK",
+        "name": "CATL",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "3968.HK",
+        "name": "China Merchants Bank",
+        "sector": "Financials"
+      },
+      {
+        "ticker": "3988.HK",
+        "name": "Bank of China",
+        "sector": "Financials"
+      },
+      {
+        "ticker": "3993.HK",
+        "name": "CMOC Group",
+        "sector": "Energy Materials Industrials"
+      },
+      {
+        "ticker": "6181.HK",
+        "name": "Laopu Gold",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "6618.HK",
+        "name": "JD Health",
+        "sector": "Health Care"
+      },
+      {
+        "ticker": "6690.HK",
+        "name": "Haier Smart Home",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "6862.HK",
+        "name": "Haidilao",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "9618.HK",
+        "name": "JD.com",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "9633.HK",
+        "name": "Nongfu Spring",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "9888.HK",
+        "name": "Baidu",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "9901.HK",
+        "name": "New Oriental",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "9961.HK",
+        "name": "Trip.com",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "9988.HK",
+        "name": "Alibaba",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "9992.HK",
+        "name": "Pop Mart",
+        "sector": "Consumer Discretionary"
+      },
+      {
+        "ticker": "9999.HK",
+        "name": "NetEase",
+        "sector": "Information Technology"
+      }
+    ]
+  }
+}

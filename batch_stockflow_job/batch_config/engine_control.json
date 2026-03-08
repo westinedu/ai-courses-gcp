@@ -1,0 +1,5 @@
+{
+  "run_financials_engine": true,
+  "run_trading_engine": true,
+  "run_news_engine": true
+}
