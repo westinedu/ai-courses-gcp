@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 import pytz
 from google.cloud import storage
 from google.api_core.exceptions import PreconditionFailed
+from modules.options_summary import OptionsSummaryDeps, OptionsSummaryService, build_options_router
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -941,6 +942,23 @@ def _get_or_refresh_next_earnings(ticker: str, force_refresh: bool = False) -> D
             done = _EARNINGS_INFLIGHT.pop(t, None)
         if done is not None:
             done.set()
+
+
+_options_service = OptionsSummaryService(
+    OptionsSummaryDeps(
+        gcs_bucket_name=GCS_BUCKET_NAME,
+        timezone=TIMEZONE,
+        market_close_grace_minutes=MARKET_CLOSE_GRACE_MINUTES,
+        now_in_market_timezone=_now_in_market_timezone,
+        market_close_at=_market_close_at,
+        is_trading_day=is_trading_day,
+        is_during_regular_market_session=_is_during_regular_market_session,
+        is_after_market_close=_is_after_market_close,
+        normalize_symbol=_normalize_symbol,
+        request_logger=request_logger,
+    )
+)
+app.include_router(build_options_router(_options_service))
 
 
 def _default_factor_weights() -> Dict[str, float]:
