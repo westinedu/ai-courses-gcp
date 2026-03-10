@@ -83,10 +83,18 @@ _HISTORICAL_L1_CACHE: Dict[str, Dict[str, Any]] = {}
 _HISTORICAL_L1_MAX_ENTRIES = max(16, int(os.environ.get("HISTORICAL_L1_MAX_ENTRIES", "256")))
 _HISTORICAL_L1_HIT_TTL_SECONDS = int(os.environ.get("HISTORICAL_L1_HIT_TTL_SECONDS", "300"))  # 5 min
 _HISTORICAL_L1_MISS_TTL_SECONDS = int(os.environ.get("HISTORICAL_L1_MISS_TTL_SECONDS", "60"))  # 1 min
+HISTORICAL_REFRESH_MAX_AGE_SECONDS = int(os.environ.get("HISTORICAL_REFRESH_MAX_AGE_SECONDS", "600"))  # 10 min
 
 # --- Global Constants ---
-# Timezone for scheduling and timestamps (e.g., US market close time)
+# Timezone for scheduling/log timestamps.
 TIMEZONE = pytz.timezone(os.environ.get("ENGINE_TZ", 'America/Los_Angeles')) # 从环境变量获取时区
+# US market clock for deciding whether a daily candle should be treated as finalized.
+MARKET_TIMEZONE = pytz.timezone(os.environ.get("MARKET_TZ", "America/New_York"))
+MARKET_OPEN_HOUR = int(os.environ.get("MARKET_OPEN_HOUR", "9"))
+MARKET_OPEN_MINUTE = int(os.environ.get("MARKET_OPEN_MINUTE", "30"))
+MARKET_CLOSE_HOUR = int(os.environ.get("MARKET_CLOSE_HOUR", "16"))
+MARKET_CLOSE_MINUTE = int(os.environ.get("MARKET_CLOSE_MINUTE", "0"))
+MARKET_CLOSE_GRACE_MINUTES = int(os.environ.get("MARKET_CLOSE_GRACE_MINUTES", "20"))
 _DEFAULT_HARDCODED_TICKERS = [
     "AAPL",
     "MSFT",
@@ -174,6 +182,160 @@ def _latest_expected_trading_day(today_in_tz: date) -> date:
     while not is_trading_day(d):
         d = d - timedelta(days=1)
     return d
+
+
+def _now_in_market_timezone() -> datetime:
+    return datetime.now(MARKET_TIMEZONE)
+
+
+def _market_open_at(now_in_market_tz: datetime) -> datetime:
+    return now_in_market_tz.replace(
+        hour=MARKET_OPEN_HOUR,
+        minute=MARKET_OPEN_MINUTE,
+        second=0,
+        microsecond=0,
+    )
+
+
+def _market_close_at(now_in_market_tz: datetime) -> datetime:
+    return now_in_market_tz.replace(
+        hour=MARKET_CLOSE_HOUR,
+        minute=MARKET_CLOSE_MINUTE,
+        second=0,
+        microsecond=0,
+    )
+
+
+def _is_during_regular_market_session(now_in_market_tz: datetime) -> bool:
+    if not is_trading_day(now_in_market_tz.date()):
+        return False
+    open_at = _market_open_at(now_in_market_tz)
+    close_at = _market_close_at(now_in_market_tz)
+    return open_at <= now_in_market_tz < close_at
+
+
+def _is_after_market_close(now_in_market_tz: datetime) -> bool:
+    close_at = _market_close_at(now_in_market_tz)
+    return now_in_market_tz >= (close_at + timedelta(minutes=MARKET_CLOSE_GRACE_MINUTES))
+
+
+def _latest_completed_trading_day(now_in_market_tz: datetime) -> date:
+    """
+    Return the latest trading day whose daily bar is expected to be finalized.
+    Before market close, today's bar may still be partial, so target yesterday.
+    """
+    d = now_in_market_tz.date()
+    if is_trading_day(d) and not _is_after_market_close(now_in_market_tz):
+        d = d - timedelta(days=1)
+    return _latest_expected_trading_day(d)
+
+
+def _historical_storage_updated_at_utc(ticker: str) -> Optional[datetime]:
+    """
+    Return storage object's last update time in UTC:
+    - GCS mode: blob.updated
+    - local fallback mode: file mtime
+    """
+    t = ticker.upper()
+    if GCS_BUCKET_NAME:
+        try:
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(GCS_BUCKET_NAME)
+            blob = bucket.blob(_get_gcs_blob_name(t))
+            if not blob.exists():
+                return None
+            blob.reload()
+            updated = blob.updated
+            if updated is None:
+                return None
+            return updated.astimezone(pytz.UTC)
+        except Exception as exc:
+            logger.warning("读取 %s GCS 历史数据更新时间失败: %s", t, exc)
+            return None
+
+    try:
+        filepath = _get_local_fallback_filepath(t)
+        if not os.path.exists(filepath):
+            return None
+        return datetime.fromtimestamp(float(os.path.getmtime(filepath)), tz=pytz.UTC)
+    except Exception as exc:
+        logger.warning("读取 %s 本地历史数据更新时间失败: %s", t, exc)
+        return None
+
+
+def _historical_storage_age_seconds(ticker: str) -> Optional[float]:
+    updated_at = _historical_storage_updated_at_utc(ticker)
+    if updated_at is None:
+        return None
+    return max(0.0, (datetime.now(pytz.UTC) - updated_at).total_seconds())
+
+
+def _needs_post_close_finalize_refresh(ticker: str, df: pd.DataFrame) -> bool:
+    """
+    After market close, refresh once if today's row may still be from pre-close snapshot.
+    We judge this by storage updated-at timestamp vs close+grace timestamp.
+    """
+    if df.empty or not isinstance(df.index, pd.DatetimeIndex):
+        return False
+
+    now_market = _now_in_market_timezone()
+    today_market = now_market.date()
+    if not is_trading_day(today_market) or not _is_after_market_close(now_market):
+        return False
+
+    sorted_df = df.sort_index()
+    last_date = sorted_df.index.max().date()
+    if last_date != today_market:
+        return False
+
+    updated_at_utc = _historical_storage_updated_at_utc(ticker)
+    if updated_at_utc is None:
+        return True
+
+    close_gate_market = _market_close_at(now_market) + timedelta(minutes=MARKET_CLOSE_GRACE_MINUTES)
+    close_gate_utc = close_gate_market.astimezone(pytz.UTC)
+    return updated_at_utc < close_gate_utc
+
+
+def _should_refresh_stored_daily(ticker: str, df: pd.DataFrame) -> bool:
+    """
+    Decide whether we should trigger a best-effort refresh by trading-day rules:
+    1) Stored data lags behind latest completed trading day.
+    2) Post-close finalization refresh (one-time, not continuous polling).
+    """
+    if df.empty or not isinstance(df.index, pd.DatetimeIndex):
+        return False
+
+    sorted_df = df.sort_index()
+    last_date = sorted_df.index.max().date()
+    now_market = _now_in_market_timezone()
+    latest_completed = _latest_completed_trading_day(now_market)
+    if last_date < latest_completed:
+        return True
+
+    if _needs_post_close_finalize_refresh(ticker, sorted_df):
+        return True
+
+    return False
+
+
+def _should_refresh_on_request(ticker: str, df: pd.DataFrame) -> bool:
+    """
+    Refresh trigger on request:
+    1) trading-day freshness rules
+    2) during regular session only, storage age exceeds threshold (default 10 minutes)
+    """
+    if _should_refresh_stored_daily(ticker, df):
+        return True
+
+    now_market = _now_in_market_timezone()
+    if not _is_during_regular_market_session(now_market):
+        return False
+
+    age = _historical_storage_age_seconds(ticker)
+    if age is None:
+        return False
+    return age >= float(max(60, HISTORICAL_REFRESH_MAX_AGE_SECONDS))
 
 
 def _maybe_refresh_daily_once(ticker: str, min_interval_seconds: int = 600, fail_backoff_seconds: int = 60) -> None:
@@ -1749,7 +1911,8 @@ def daily_incremental_update_job(ticker: str) -> None:
     logger.info("处理 %s 的每日增量更新...", ticker)
     existing_df = _load_historical_data_from_storage(ticker)
     
-    today_date_naive = datetime.now(TIMEZONE).date() # 获取当前时区的 naive 日期
+    now_market = _now_in_market_timezone()
+    today_date_naive = now_market.date()
     fetch_start_date = None
 
     if existing_df.empty:
@@ -1796,6 +1959,17 @@ def daily_incremental_update_job(ticker: str) -> None:
         existing_df.index = existing_df.index.normalize() # normalize() 会将时间部分设为 00:00:00
     
     latest_df.index = latest_df.index.normalize() # 对新获取的数据也进行同样处理
+
+    # Before market close, today's daily bar can be an intraday snapshot.
+    # Drop it so persisted history only contains finalized daily candles.
+    if is_trading_day(today_date_naive) and not _is_after_market_close(now_market):
+        intraday_mask = latest_df.index.date == today_date_naive
+        if bool(np.any(intraday_mask)):
+            latest_df = latest_df.loc[~intraday_mask].copy()
+            logger.info("市场未收盘，忽略 %s 的当日未收盘日线快照 (%s)。", ticker, today_date_naive)
+            if latest_df.empty:
+                logger.info("%s 本次仅返回未收盘日线，跳过持久化写入。", ticker)
+                return
     # --- 关键修改点 ---
     # 合并现有数据和新获取的数据
     combined_df = pd.concat([existing_df, latest_df])
@@ -2108,13 +2282,9 @@ async def get_historical_data_endpoint(ticker: str, period: str = Query('1y', pa
     # Prefer persisted data (GCS) when available; refresh only when stale (rate-limited).
     df = _load_historical_data_from_storage(ticker)
     try:
-        if not df.empty and isinstance(df.index, pd.DatetimeIndex):
-            df = df.sort_index()
-            last_date = df.index.max().date()
-            expected = _latest_expected_trading_day(datetime.now(TIMEZONE).date())
-            if last_date < expected:
-                _maybe_refresh_daily_once(ticker, min_interval_seconds=600)
-                df = _load_historical_data_from_storage(ticker, force_reload=True).sort_index()
+        if _should_refresh_on_request(ticker, df):
+            _maybe_refresh_daily_once(ticker, min_interval_seconds=HISTORICAL_REFRESH_MAX_AGE_SECONDS)
+            df = _load_historical_data_from_storage(ticker, force_reload=True).sort_index()
     except Exception:
         pass
 
@@ -2521,12 +2691,9 @@ async def market_candles(
 
     # If we have stored data but it's stale, refresh it (rate-limited per instance).
     try:
-        if not df.empty and isinstance(df.index, pd.DatetimeIndex):
-            last_date = df.index.max().date()
-            expected = _latest_expected_trading_day(datetime.now(TIMEZONE).date())
-            if last_date < expected:
-                _maybe_refresh_daily_once(s, min_interval_seconds=600)
-                df = _load_historical_data_from_storage(s, force_reload=True)
+        if _should_refresh_on_request(s, df):
+            _maybe_refresh_daily_once(s, min_interval_seconds=HISTORICAL_REFRESH_MAX_AGE_SECONDS)
+            df = _load_historical_data_from_storage(s, force_reload=True)
     except Exception:
         pass
 
@@ -2572,12 +2739,9 @@ async def trading_us_analysis(body: Dict[str, Any] = Body(default_factory=dict))
     df = _load_historical_data_from_storage(symbol)
     # Ensure stored candles are up-to-date enough (best-effort), but keep L1 hit on fresh data.
     try:
-        if not df.empty and isinstance(df.index, pd.DatetimeIndex):
-            last_date = df.index.max().date()
-            expected = _latest_expected_trading_day(datetime.now(TIMEZONE).date())
-            if last_date < expected:
-                _maybe_refresh_daily_once(symbol, min_interval_seconds=600)
-                df = _load_historical_data_from_storage(symbol, force_reload=True)
+        if _should_refresh_on_request(symbol, df):
+            _maybe_refresh_daily_once(symbol, min_interval_seconds=HISTORICAL_REFRESH_MAX_AGE_SECONDS)
+            df = _load_historical_data_from_storage(symbol, force_reload=True)
     except Exception:
         pass
 
