@@ -453,6 +453,66 @@ def _load_latest_price_snapshot(ticker: str) -> Optional[Dict[str, float]]:
     }
 
 
+def _normalize_symbol_strict(raw: Any) -> Optional[str]:
+    """严格符号校验，非法值返回 None（不会回退到 AAPL）。"""
+    v = str(raw or "").strip().upper()
+    if not v:
+        return None
+    if len(v) > 24:
+        return None
+    if not all(ch.isalnum() or ch in ".^-" for ch in v):
+        return None
+    return v
+
+
+def _parse_symbols_csv(raw_symbols: str, max_count: int = 1000) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for token in str(raw_symbols or "").split(","):
+        symbol = _normalize_symbol_strict(token)
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        out.append(symbol)
+        if len(out) >= max_count:
+            break
+    return out
+
+
+def _daily_mover_snapshot_from_storage(ticker: str) -> Optional[Dict[str, Any]]:
+    """
+    从已落地的日线数据中提取“最近已完成交易日”涨跌幅。
+    计算方式: (last_close - prev_close) / prev_close * 100
+    """
+    df = _load_historical_data_from_storage(ticker)
+    if df.empty or "Close" not in df.columns:
+        return None
+
+    closes = pd.to_numeric(df["Close"], errors="coerce").dropna()
+    if closes.shape[0] < 2:
+        return None
+
+    last_close = float(closes.iloc[-1])
+    prev_close = float(closes.iloc[-2])
+    if not np.isfinite(last_close) or not np.isfinite(prev_close) or prev_close == 0:
+        return None
+
+    as_of_idx = closes.index[-1]
+    if hasattr(as_of_idx, "date"):
+        as_of = as_of_idx.date().isoformat()
+    else:
+        as_of = str(as_of_idx)[:10]
+
+    change_pct = ((last_close - prev_close) / prev_close) * 100.0
+    return {
+        "symbol": ticker.upper(),
+        "asOf": as_of,
+        "close": round(last_close, 4),
+        "previousClose": round(prev_close, 4),
+        "changePct": round(change_pct, 6),
+    }
+
+
 def _fetch_historical_df(
     ticker: str,
     period: Optional[str] = None, # Use period or start/end
@@ -2671,6 +2731,54 @@ async def health() -> Dict[str, str]:
 
 
 # --- Compatibility endpoints for vercel-nextjs (optional, but helps swap data source later) ---
+
+@app.get("/api/market/movers/daily", summary="(compat) 获取最近收盘日涨跌幅列表")
+async def market_movers_daily(
+    symbols: str = Query(..., description="逗号分隔股票代码，例如 AAPL,MSFT,NVDA"),
+    limit: int = Query(200, ge=1, le=2000, description="最多返回多少条"),
+    sort: str = Query("desc", pattern="^(desc|asc)$", description="按涨跌幅排序方向"),
+) -> Dict[str, Any]:
+    """
+    返回基于“已落地日线数据”的最近两根收盘价计算结果（非实时分时）。
+    """
+    requested = _parse_symbols_csv(symbols, max_count=1000)
+    if not requested:
+        raise HTTPException(status_code=400, detail="symbols 参数为空或格式无效。")
+
+    items: List[Dict[str, Any]] = []
+    missing: List[str] = []
+    as_of_set: set[str] = set()
+
+    for symbol in requested:
+        snapshot = _daily_mover_snapshot_from_storage(symbol)
+        if not snapshot:
+            missing.append(symbol)
+            continue
+        items.append(snapshot)
+        as_of = str(snapshot.get("asOf") or "").strip()
+        if as_of:
+            as_of_set.add(as_of)
+
+    reverse = sort != "asc"
+    items.sort(key=lambda x: float(x.get("changePct", 0.0)), reverse=reverse)
+    if len(items) > limit:
+        items = items[:limit]
+
+    if as_of_set:
+        day_key = max(as_of_set)
+    else:
+        day_key = _latest_completed_trading_day(_now_in_market_timezone()).isoformat()
+
+    return {
+        "dayKey": day_key,
+        "sort": sort,
+        "requested": len(requested),
+        "returned": len(items),
+        "missing": missing,
+        "items": items,
+        "source": "stored-daily",
+    }
+
 
 @app.get("/api/market/candles", summary="(compat) 获取市场K线数据")
 async def market_candles(
