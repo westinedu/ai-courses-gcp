@@ -50,6 +50,16 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _timestamp_to_iso(value: Any) -> Optional[str]:
+    seconds = _safe_float(value)
+    if seconds is None or seconds <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat(timespec="seconds")
+    except Exception:
+        return None
+
+
 def _safe_float(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -104,7 +114,20 @@ def _load_markets_config_from_gcs() -> Optional[Dict[str, Any]]:
 def _load_markets_config() -> Dict[str, Any]:
     local_payload = _read_json_file(LOCAL_CONFIG_PATH)
     remote_payload = _load_markets_config_from_gcs()
-    payload = remote_payload or local_payload
+    payload = dict(local_payload)
+    canonical_keys = {str(key).strip().lower(): key for key in payload.keys()}
+    if isinstance(remote_payload, dict):
+        for raw_key, cfg in remote_payload.items():
+            lookup_key = str(raw_key).strip().lower()
+            target_key = canonical_keys.get(lookup_key, raw_key)
+            if isinstance(cfg, dict):
+                base_cfg = payload.get(target_key)
+                merged_cfg = dict(base_cfg) if isinstance(base_cfg, dict) else {}
+                merged_cfg.update(cfg)
+                payload[target_key] = merged_cfg
+            else:
+                payload[target_key] = cfg
+            canonical_keys[lookup_key] = target_key
 
     normalized: Dict[str, Any] = {}
     for raw_key, cfg in payload.items():
@@ -139,8 +162,18 @@ def _load_markets_config() -> Dict[str, Any]:
             "timezone": str(cfg.get("timezone") or "UTC").strip() or "UTC",
             "currency": str(cfg.get("currency") or "").strip().upper() or None,
             "description": str(cfg.get("description") or "").strip(),
+            "index": None,
             "constituents": clean_constituents,
         }
+
+        raw_index = cfg.get("index")
+        if isinstance(raw_index, dict):
+            index_ticker = str(raw_index.get("ticker") or "").strip().upper()
+            if index_ticker:
+                normalized[key]["index"] = {
+                    "ticker": index_ticker,
+                    "name": str(raw_index.get("name") or index_ticker).strip() or index_ticker,
+                }
 
     if not normalized:
         raise RuntimeError("No valid market config found for heatmap service.")
@@ -335,6 +368,109 @@ def _fetch_one_quote(symbol: str, fallback_name: str, fallback_sector: str, fall
     return point
 
 
+def _positive_history_closes(history_frame: Any) -> List[float]:
+    closes: List[float] = []
+    if history_frame is None or getattr(history_frame, "empty", True) or "Close" not in history_frame.columns:
+        return closes
+    for raw in history_frame["Close"].tolist():
+        close = _safe_float(raw)
+        if close is not None and close > 0:
+            closes.append(close)
+    return closes
+
+
+def _fetch_market_index(symbol: str, fallback_name: str, fallback_currency: Optional[str]) -> Optional[Dict[str, Any]]:
+    ticker_obj = yf.Ticker(symbol)
+    fast = _extract_fast_info(ticker_obj)
+
+    price = _pick_number(
+        fast,
+        [
+            "lastPrice",
+            "last_price",
+            "regularMarketPrice",
+            "currentPrice",
+        ],
+    )
+    prev_close = _pick_number(
+        fast,
+        [
+            "regularMarketPreviousClose",
+            "regular_market_previous_close",
+            "previousClose",
+            "previous_close",
+        ],
+    )
+
+    info: Dict[str, Any] = {}
+    if price is None or prev_close is None:
+        try:
+            info = ticker_obj.info or {}
+        except Exception:
+            info = {}
+
+    if price is None:
+        price = _pick_number(info, ["regularMarketPrice", "currentPrice"])
+    if prev_close is None:
+        prev_close = _pick_number(info, ["regularMarketPreviousClose", "previousClose"])
+
+    history_price_used = False
+    if price is None or prev_close is None:
+        try:
+            hist = ticker_obj.history(period="5d", interval="1d", auto_adjust=False, actions=False)
+            closes = _positive_history_closes(hist)
+            if price is None and closes:
+                price = closes[-1]
+                history_price_used = True
+            if prev_close is None:
+                if len(closes) >= 2:
+                    prev_close = closes[-2]
+                elif len(closes) == 1:
+                    prev_close = closes[-1]
+        except Exception:
+            pass
+
+    if price is None:
+        return None
+
+    change = _pick_number(info, ["regularMarketChange"])
+    if change is None and prev_close is not None:
+        change = price - prev_close
+
+    change_pct = _pick_number(info, ["regularMarketChangePercent"])
+    if change_pct is None and prev_close is not None and prev_close > 0:
+        change_pct = ((price - prev_close) / prev_close) * 100.0
+
+    currency = (
+        str(fast.get("currency") or "").strip().upper()
+        or str(info.get("currency") or "").strip().upper()
+        or (fallback_currency or "")
+        or None
+    )
+
+    name = (
+        str(info.get("shortName") or "").strip()
+        or str(info.get("longName") or "").strip()
+        or fallback_name
+        or symbol
+    )
+
+    as_of = _timestamp_to_iso(_pick_number(info, ["regularMarketTime"])) or _utc_now_iso()
+
+    snapshot: Dict[str, Any] = {
+        "symbol": symbol,
+        "name": name,
+        "price": round(float(price), 4),
+        "previousClose": round(float(prev_close), 4) if prev_close is not None else None,
+        "change": round(float(change), 4) if change is not None else 0.0,
+        "changePct": round(float(change_pct), 4) if change_pct is not None else 0.0,
+        "currency": currency,
+        "asOf": as_of,
+        "source": "history" if history_price_used else "quote",
+    }
+    return snapshot
+
+
 def _build_market_snapshot(market: str) -> Dict[str, Any]:
     config = markets_config.get(market)
     if not config:
@@ -403,6 +539,18 @@ def _build_market_snapshot(market: str) -> Dict[str, Any]:
     for item in sectors:
         item["value"] = round(float(item["value"]), 2)
 
+    index_snapshot = None
+    index_config = config.get("index")
+    if isinstance(index_config, dict):
+        try:
+            index_snapshot = _fetch_market_index(
+                symbol=str(index_config.get("ticker") or "").strip().upper(),
+                fallback_name=str(index_config.get("name") or market.upper()).strip() or market.upper(),
+                fallback_currency=config.get("currency"),
+            )
+        except Exception as exc:
+            logger.warning("Index fetch failed for market=%s symbol=%s: %s", market, index_config.get("ticker"), exc)
+
     now_iso = _utc_now_iso()
     snapshot: Dict[str, Any] = {
         "market": market,
@@ -422,6 +570,8 @@ def _build_market_snapshot(market: str) -> Dict[str, Any]:
         "sectors": sectors,
         "nodes": nodes,
     }
+    if index_snapshot:
+        snapshot["index"] = index_snapshot
     return snapshot
 
 

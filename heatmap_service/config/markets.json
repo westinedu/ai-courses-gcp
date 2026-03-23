@@ -5,6 +5,10 @@
     "timezone": "Asia/Hong_Kong",
     "currency": "HKD",
     "description": "Hang Seng Index constituents for heatmap snapshot (90 names, effective 2026-03-09).",
+    "index": {
+      "ticker": "^HSI",
+      "name": "Hang Seng Index"
+    },
     "constituents": [
       {
         "ticker": "0001.HK",

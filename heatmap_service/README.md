@@ -56,6 +56,7 @@ uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 - `GET /v1/markets`
 - `GET /v1/heatmap/{market}`
   - 只读路径：按 `L1 内存缓存 -> L2 GCS` 返回最新快照，不触发重算。
+  - 快照现在会附带可选 `index` 摘要（例如 `HK` 的 `^HSI`），便于前端顶部指数卡和热图共用同一份产数。
 - `POST /v1/heatmap/{market}/refresh`
   - 强制实时重算并更新缓存/GCS（建议仅供 Scheduler 或受控调用）。
   - 可选 Header: `x-heatmap-token: <HEATMAP_CRON_TOKEN>`
