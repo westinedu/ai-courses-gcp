@@ -17,7 +17,7 @@ Environment overrides:
   SERVICE_NAME        (default: heatmap-service)
   HEATMAP_SERVICE_URL (default: auto-discover from Cloud Run service URL)
   JOB_NAME            (default: heatmap-refresh-hk)
-  SCHEDULE            (default: */5 9-16 * * 1-5)
+  SCHEDULE            (default: */10 8-16 * * 1-5)
   TIME_ZONE           (default: Asia/Hong_Kong)
   MARKETS_CSV         (default: hk) e.g. hk,ks
   HEATMAP_CRON_TOKEN  (optional)
@@ -33,7 +33,9 @@ SCHEDULER_REGION="${SCHEDULER_REGION:-${REGION}}"
 SERVICE_NAME="${SERVICE_NAME:-heatmap-service}"
 SERVICE_URL="${HEATMAP_SERVICE_URL:-https://heatmap-service-805008808538.us-central1.run.app}"
 JOB_NAME="${JOB_NAME:-heatmap-refresh-hk}"
-SCHEDULE="${SCHEDULE:-*/5 9-16 * * 1-5}"
+# Default to a 10-minute cadence in Asia/Hong_Kong time and start at 08:00
+# so the shared job also covers the 09:00 open for JP/KR markets.
+SCHEDULE="${SCHEDULE:-*/10 8-16 * * 1-5}"
 TIME_ZONE="${TIME_ZONE:-Asia/Hong_Kong}"
 MARKETS_CSV="${MARKETS_CSV:-hk,tw,jp,ks}"
 HEATMAP_CRON_TOKEN="${HEATMAP_CRON_TOKEN:-13ca1a26a3b842c409820331638cc05ebc561c9ca2165c4e9ece09f0c7fd999f}"
