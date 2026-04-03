@@ -1,6 +1,6 @@
 # Heatmap Service (Cloud Run)
 
-`heatmap_service` 是面向多市场（先 `HK`）的 Heatmap 数据服务。
+`heatmap_service` 是面向多市场的 Heatmap 数据服务。
 
 - 读取市场成分股配置（本地 `config/markets.json`，可选 GCS 覆盖）。
 - 拉取行情并生成 Heatmap 快照。
@@ -11,7 +11,9 @@
 ## 当前支持
 
 - `HK`（港股）
-- 结构已预留扩展 `KS/US/...`，后续只需在配置中增加市场与成分股。
+- `TW`（台湾）
+- `JP`（日本）
+- `KS`（韩国）
 
 ## 目录
 
@@ -62,7 +64,14 @@ uvicorn main:app --host 0.0.0.0 --port 8080 --reload
   - 可选 Header: `x-heatmap-token: <HEATMAP_CRON_TOKEN>`
 - `POST /v1/heatmap/refresh_all`
   - Body (optional): `{ "markets": ["hk"] }`
-  - 强制重算多个市场（建议仅供 Scheduler 或受控调用）。
+  - 默认是“受控刷新”：只会刷新当前处于交易时段且到达市场 cadence 的市场。
+  - 当前内置 cadence / 窗口（`Asia/Hong_Kong`）：
+    - `HK`: `09:30-16:10`，每 `10` 分钟
+    - `TW`: `09:00-13:30`，每 `10` 分钟
+    - `JP`: `08:00-14:30`，每 `30` 分钟，整点/半点
+    - `KS`: `08:00-14:30`，每 `30` 分钟，`10` 分/`40` 分错峰
+  - 可选 Body: `{ "markets": ["hk", "tw"], "force": true }`
+  - `force=true` 会绕过时间窗与 cadence 判断，恢复为原来的全量强制刷新行为。
   - 可选 Header: `x-heatmap-token: <HEATMAP_CRON_TOKEN>`
 
 ## 部署 Cloud Run
@@ -74,14 +83,14 @@ cd GCP/heatmap_service
 
 ## Cloud Scheduler 建议
 
-基于 `yfinance` 建议 Scheduler 每 5 分钟触发（可按交易时段单独配置）：
+建议保留一个覆盖并集交易时段的 Scheduler 心跳，让服务端按市场时间窗与 cadence 决定是否真正刷新：
 
 - Method: `POST`
 - URL: `https://<heatmap-service-url>/v1/heatmap/refresh_all`
 - Header: `x-heatmap-token: <same token>`（如果你配置了 `HEATMAP_CRON_TOKEN`）
-- Body: `{ "markets": ["hk"] }`
+- Body: `{ "markets": ["hk", "tw", "jp", "ks"] }`
 
-这样可实现“GCP 端受控近实时产数”，前端仅拉取最新快照，不对实时重算施压。
+这样可实现“GCP 端受控近实时产数”，前端仅拉取最新快照，不对实时重算施压，同时避免把四个市场无条件塞进一次长任务。
 
 可直接使用独立脚本配置（与部署脚本解耦）：
 
@@ -97,9 +106,34 @@ PROJECT_ID="your-project" \
 REGION="us-central1" \
 SCHEDULER_REGION="us-central1" \
 JOB_NAME="heatmap-refresh-hk" \
-SCHEDULE="*/5 * * * 1-5" \
+SCHEDULE="*/10 8-16 * * 1-5" \
 TIME_ZONE="Asia/Hong_Kong" \
-MARKETS_CSV="hk" \
+MARKETS_CSV="hk,tw,jp,ks" \
 HEATMAP_CRON_TOKEN="<same token>" \
 ./configure_heatmap_scheduler.sh
+```
+
+立即触发一次当前 Scheduler job（不改变服务端 cadence / 时间窗判断）：
+
+```bash
+cd GCP/heatmap_service
+RUN_NOW="1"  ./configure_heatmap_scheduler.sh
+```
+
+直接调用 Heatmap service 并强制刷新，绕过受控刷新逻辑（等价于旧版 `refresh_all`）：
+
+```bash
+curl -X POST "https://<heatmap-service-url>/v1/heatmap/refresh_all" \
+  -H "Content-Type: application/json" \
+  -H "x-heatmap-token: <same token>" \
+  -d '{"markets":["hk","tw","jp","ks"],"force":true}'
+```
+
+只强制刷新单个市场示例：
+
+```bash
+curl -X POST "https://<heatmap-service-url>/v1/heatmap/refresh_all" \
+  -H "Content-Type: application/json" \
+  -H "x-heatmap-token: <same token>" \
+  -d '{"markets":["hk"],"force":true}'
 ```

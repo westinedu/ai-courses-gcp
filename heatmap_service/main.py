@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 import yfinance as yf
 from fastapi import FastAPI, HTTPException, Request
@@ -45,9 +46,65 @@ _snapshot_cache: Dict[str, Dict[str, Any]] = {}
 _snapshot_locks: Dict[str, threading.Lock] = {}
 markets_config: Dict[str, Any] = {}
 
+SCHEDULER_TIMEZONE = ZoneInfo("Asia/Hong_Kong")
+
+MARKET_REFRESH_POLICIES: Dict[str, Dict[str, Any]] = {
+    "hk": {
+        "cadence_seconds": 10 * 60,
+        "phase_minute": 0,
+        "window_start_minute": 9 * 60 + 30,
+        "window_end_minute": 16 * 60 + 10,
+        "weekdays": {0, 1, 2, 3, 4},
+    },
+    "tw": {
+        "cadence_seconds": 10 * 60,
+        "phase_minute": 0,
+        "window_start_minute": 9 * 60,
+        "window_end_minute": 13 * 60 + 30,
+        "weekdays": {0, 1, 2, 3, 4},
+    },
+    "jp": {
+        "cadence_seconds": 30 * 60,
+        "phase_minute": 0,
+        "window_start_minute": 8 * 60,
+        "window_end_minute": 14 * 60 + 30,
+        "weekdays": {0, 1, 2, 3, 4},
+    },
+    "ks": {
+        "cadence_seconds": 30 * 60,
+        "phase_minute": 10,
+        "window_start_minute": 8 * 60,
+        "window_end_minute": 14 * 60 + 30,
+        "weekdays": {0, 1, 2, 3, 4},
+    },
+}
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _timestamp_to_iso(value: Any) -> Optional[str]:
@@ -217,6 +274,104 @@ def _load_snapshot_from_gcs(market: str) -> Optional[Dict[str, Any]]:
     except Exception as exc:
         logger.exception("Failed loading GCS snapshot (%s): %s", path, exc)
         return None
+
+
+def _latest_snapshot(market: str) -> Optional[Dict[str, Any]]:
+    entry = _snapshot_cache.get(market)
+    snapshot = entry.get("snapshot") if isinstance(entry, dict) else None
+    if isinstance(snapshot, dict):
+        return snapshot
+    return _load_snapshot_from_gcs(market)
+
+
+def _refresh_policy_for_market(market: str) -> Dict[str, Any]:
+    return MARKET_REFRESH_POLICIES.get(
+        market,
+        {
+            "cadence_seconds": 10 * 60,
+            "phase_minute": 0,
+            "window_start_minute": 0,
+            "window_end_minute": 24 * 60,
+            "weekdays": {0, 1, 2, 3, 4},
+        },
+    )
+
+
+def _refresh_decision(market: str, *, force: bool = False, now: Optional[datetime] = None) -> Dict[str, Any]:
+    policy = _refresh_policy_for_market(market)
+    cadence_seconds = int(policy.get("cadence_seconds") or 0)
+    phase_minute = int(policy.get("phase_minute") or 0)
+
+    if force:
+        return {
+            "refresh": True,
+            "reason": "force",
+            "cadenceSeconds": cadence_seconds,
+            "phaseMinute": phase_minute,
+        }
+
+    local_now = (now or datetime.now(timezone.utc)).astimezone(SCHEDULER_TIMEZONE)
+    minute_of_day = local_now.hour * 60 + local_now.minute
+    weekdays = policy.get("weekdays") or {0, 1, 2, 3, 4}
+    if local_now.weekday() not in weekdays:
+        return {
+            "refresh": False,
+            "reason": "outside_weekday",
+            "cadenceSeconds": cadence_seconds,
+            "phaseMinute": phase_minute,
+        }
+
+    window_start = int(policy.get("window_start_minute") or 0)
+    window_end = int(policy.get("window_end_minute") or 24 * 60)
+    if minute_of_day < window_start or minute_of_day > window_end:
+        return {
+            "refresh": False,
+            "reason": "outside_window",
+            "cadenceSeconds": cadence_seconds,
+            "phaseMinute": phase_minute,
+        }
+
+    latest_snapshot = _latest_snapshot(market)
+    latest_generated_at = None
+    if isinstance(latest_snapshot, dict):
+        latest_generated_at = _parse_iso_datetime(latest_snapshot.get("generatedAt"))
+
+    if latest_generated_at is None:
+        return {
+            "refresh": True,
+            "reason": "cold_start",
+            "cadenceSeconds": cadence_seconds,
+            "phaseMinute": phase_minute,
+        }
+
+    age_seconds = max(0, int((now or datetime.now(timezone.utc) - latest_generated_at).total_seconds()))
+    if age_seconds < cadence_seconds:
+        return {
+            "refresh": False,
+            "reason": "cadence_not_due",
+            "cadenceSeconds": cadence_seconds,
+            "phaseMinute": phase_minute,
+            "ageSeconds": age_seconds,
+        }
+
+    if cadence_seconds >= 60:
+        cadence_minutes = max(1, cadence_seconds // 60)
+        if minute_of_day % cadence_minutes != phase_minute % cadence_minutes:
+            return {
+                "refresh": False,
+                "reason": "phase_not_due",
+                "cadenceSeconds": cadence_seconds,
+                "phaseMinute": phase_minute,
+                "ageSeconds": age_seconds,
+            }
+
+    return {
+        "refresh": True,
+        "reason": "cadence_due",
+        "cadenceSeconds": cadence_seconds,
+        "phaseMinute": phase_minute,
+        "ageSeconds": age_seconds,
+    }
 
 
 def _save_snapshot_to_gcs(market: str, snapshot: Dict[str, Any]) -> None:
@@ -787,23 +942,45 @@ async def refresh_all_snapshots(request: Request) -> Dict[str, Any]:
         except Exception:
             body = {}
     requested_markets = body.get("markets") if isinstance(body, dict) else None
+    force_refresh = _coerce_bool(body.get("force")) if isinstance(body, dict) else False
 
     if isinstance(requested_markets, list) and requested_markets:
         markets = [str(m).strip().lower() for m in requested_markets if str(m).strip()]
     else:
         markets = sorted(markets_config.keys())
 
+    now_utc = datetime.now(timezone.utc)
     results: List[Dict[str, Any]] = []
     for market in markets:
+        decision = _refresh_decision(market, force=force_refresh, now=now_utc)
+        if not decision.get("refresh"):
+            results.append(
+                {
+                    "market": market,
+                    "ok": True,
+                    "refreshed": False,
+                    "reason": decision.get("reason"),
+                    "cadenceSeconds": decision.get("cadenceSeconds"),
+                    "phaseMinute": decision.get("phaseMinute"),
+                    "ageSeconds": decision.get("ageSeconds"),
+                }
+            )
+            continue
+
         try:
             snap = _resolve_snapshot(market=market, force_refresh=True)
             results.append(
                 {
                     "market": market,
                     "ok": True,
+                    "refreshed": True,
+                    "reason": decision.get("reason"),
                     "count": snap.get("count"),
                     "failedCount": snap.get("failedCount"),
                     "generatedAt": snap.get("generatedAt"),
+                    "cadenceSeconds": decision.get("cadenceSeconds"),
+                    "phaseMinute": decision.get("phaseMinute"),
+                    "ageSeconds": decision.get("ageSeconds"),
                 }
             )
         except HTTPException as exc:
@@ -812,10 +989,15 @@ async def refresh_all_snapshots(request: Request) -> Dict[str, Any]:
             results.append({"market": market, "ok": False, "status": 500, "detail": str(exc)})
 
     ok_count = sum(1 for item in results if item.get("ok"))
+    refreshed_count = sum(1 for item in results if item.get("refreshed"))
+    skipped_count = sum(1 for item in results if item.get("ok") and not item.get("refreshed"))
     return {
         "ok": ok_count == len(results),
+        "force": force_refresh,
         "total": len(results),
         "success": ok_count,
         "failed": len(results) - ok_count,
+        "refreshed": refreshed_count,
+        "skipped": skipped_count,
         "results": results,
     }
