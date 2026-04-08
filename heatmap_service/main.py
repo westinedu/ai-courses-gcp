@@ -344,7 +344,7 @@ def _refresh_decision(market: str, *, force: bool = False, now: Optional[datetim
             "phaseMinute": phase_minute,
         }
 
-    age_seconds = max(0, int((now or datetime.now(timezone.utc) - latest_generated_at).total_seconds()))
+    age_seconds = max(0, int(((now or datetime.now(timezone.utc)) - latest_generated_at).total_seconds()))
     if age_seconds < cadence_seconds:
         return {
             "refresh": False,

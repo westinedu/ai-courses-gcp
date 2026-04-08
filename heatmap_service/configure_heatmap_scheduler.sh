@@ -23,6 +23,7 @@ Environment overrides:
   HEATMAP_CRON_TOKEN  (optional)
   ENABLE_APIS         (default: 1) enable cloudscheduler API automatically
   RUN_NOW             (default: 0) set 1 to trigger one immediate run
+  RUN_NOW_FORCE       (default: 1) when RUN_NOW=1, also call refresh_all with force=true
 EOF
   exit 0
 fi
@@ -41,6 +42,7 @@ MARKETS_CSV="${MARKETS_CSV:-hk,tw,jp,ks}"
 HEATMAP_CRON_TOKEN="${HEATMAP_CRON_TOKEN:-13ca1a26a3b842c409820331638cc05ebc561c9ca2165c4e9ece09f0c7fd999f}"
 ENABLE_APIS="${ENABLE_APIS:-1}"
 RUN_NOW="${RUN_NOW:-0}"
+RUN_NOW_FORCE="${RUN_NOW_FORCE:-1}"
 
 if [ -z "${PROJECT_ID}" ] || [ "${PROJECT_ID}" = "(unset)" ]; then
   echo "Error: no GCP project found."
@@ -137,6 +139,25 @@ fi
 if [ "${RUN_NOW}" = "1" ]; then
   gcloud scheduler jobs run "${JOB_NAME}" --project "${PROJECT_ID}" --location "${SCHEDULER_REGION}"
   echo "Triggered one run: ${JOB_NAME}"
+
+  if [ "${RUN_NOW_FORCE}" = "1" ]; then
+    FORCE_BODY="{\"markets\":[${MARKETS_JSON}],\"force\":true}"
+    CURL_ARGS=(
+      -X POST
+      "${TARGET_URI}"
+      -H "Content-Type: application/json"
+      -d "${FORCE_BODY}"
+      --fail-with-body
+      --silent
+      --show-error
+    )
+    if [ -n "${HEATMAP_CRON_TOKEN}" ]; then
+      CURL_ARGS+=(-H "x-heatmap-token: ${HEATMAP_CRON_TOKEN}")
+    fi
+    echo "Triggered one direct force refresh: ${TARGET_URI}"
+    curl "${CURL_ARGS[@]}"
+    echo ""
+  fi
 fi
 
 echo "Done."
