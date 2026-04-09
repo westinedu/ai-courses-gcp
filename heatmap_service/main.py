@@ -5,7 +5,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -65,17 +65,19 @@ MARKET_REFRESH_POLICIES: Dict[str, Dict[str, Any]] = {
     },
     "jp": {
         "cadence_seconds": 30 * 60,
-        "phase_minute": 0,
+        "phase_minute": 20,
         "window_start_minute": 8 * 60,
         "window_end_minute": 14 * 60 + 30,
         "weekdays": {0, 1, 2, 3, 4},
+        "slot_refresh": True,
     },
     "ks": {
         "cadence_seconds": 30 * 60,
-        "phase_minute": 10,
-        "window_start_minute": 8 * 60,
+        "phase_minute": 0,
+        "window_start_minute": 8 * 60 + 20,
         "window_end_minute": 14 * 60 + 30,
         "weekdays": {0, 1, 2, 3, 4},
+        "slot_refresh": True,
     },
 }
 
@@ -297,6 +299,14 @@ def _refresh_policy_for_market(market: str) -> Dict[str, Any]:
     )
 
 
+def _current_slot_start(local_now: datetime, cadence_minutes: int, phase_minute: int) -> datetime:
+    minute_of_day = local_now.hour * 60 + local_now.minute
+    remainder = (minute_of_day - phase_minute) % cadence_minutes
+    slot_minute = minute_of_day - remainder
+    day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return day_start + timedelta(minutes=slot_minute)
+
+
 def _refresh_decision(market: str, *, force: bool = False, now: Optional[datetime] = None) -> Dict[str, Any]:
     policy = _refresh_policy_for_market(market)
     cadence_seconds = int(policy.get("cadence_seconds") or 0)
@@ -312,6 +322,7 @@ def _refresh_decision(market: str, *, force: bool = False, now: Optional[datetim
 
     local_now = (now or datetime.now(timezone.utc)).astimezone(SCHEDULER_TIMEZONE)
     minute_of_day = local_now.hour * 60 + local_now.minute
+    slot_refresh = _coerce_bool(policy.get("slot_refresh"))
     weekdays = policy.get("weekdays") or {0, 1, 2, 3, 4}
     if local_now.weekday() not in weekdays:
         return {
@@ -336,6 +347,40 @@ def _refresh_decision(market: str, *, force: bool = False, now: Optional[datetim
     if isinstance(latest_snapshot, dict):
         latest_generated_at = _parse_iso_datetime(latest_snapshot.get("generatedAt"))
 
+    age_seconds = None
+    if latest_generated_at is not None:
+        age_seconds = max(0, int(((now or datetime.now(timezone.utc)) - latest_generated_at).total_seconds()))
+
+    if slot_refresh and cadence_seconds >= 60:
+        cadence_minutes = max(1, cadence_seconds // 60)
+        if minute_of_day % cadence_minutes != phase_minute % cadence_minutes:
+            return {
+                "refresh": False,
+                "reason": "phase_not_due",
+                "cadenceSeconds": cadence_seconds,
+                "phaseMinute": phase_minute,
+                "ageSeconds": age_seconds,
+            }
+
+        slot_start_local = _current_slot_start(local_now, cadence_minutes, phase_minute)
+        slot_start_utc = slot_start_local.astimezone(timezone.utc)
+        if latest_generated_at is not None and latest_generated_at >= slot_start_utc:
+            return {
+                "refresh": False,
+                "reason": "slot_already_refreshed",
+                "cadenceSeconds": cadence_seconds,
+                "phaseMinute": phase_minute,
+                "ageSeconds": age_seconds,
+            }
+
+        return {
+            "refresh": True,
+            "reason": "slot_due" if latest_generated_at is not None else "slot_cold_start",
+            "cadenceSeconds": cadence_seconds,
+            "phaseMinute": phase_minute,
+            "ageSeconds": age_seconds,
+        }
+
     if latest_generated_at is None:
         return {
             "refresh": True,
@@ -344,7 +389,6 @@ def _refresh_decision(market: str, *, force: bool = False, now: Optional[datetim
             "phaseMinute": phase_minute,
         }
 
-    age_seconds = max(0, int(((now or datetime.now(timezone.utc)) - latest_generated_at).total_seconds()))
     if age_seconds < cadence_seconds:
         return {
             "refresh": False,
