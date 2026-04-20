@@ -37,7 +37,7 @@ WRITE_HISTORY = str(os.environ.get("HEATMAP_WRITE_HISTORY", "0")).strip().lower(
 CRON_TOKEN = (os.environ.get("HEATMAP_CRON_TOKEN") or "").strip()
 DEFAULT_MARKET = (os.environ.get("HEATMAP_DEFAULT_MARKET") or "hk").strip().lower() or "hk"
 # Soft timeout for one market refresh. 0 means no soft timeout.
-QUOTE_TIMEOUT_SECONDS = max(0, int(os.environ.get("HEATMAP_QUOTE_TIMEOUT_SECONDS", "90")))
+QUOTE_TIMEOUT_SECONDS = max(0, int(os.environ.get("HEATMAP_QUOTE_TIMEOUT_SECONDS", "180")))
 
 LOCAL_CONFIG_PATH = Path(__file__).resolve().parent / "config" / "markets.json"
 

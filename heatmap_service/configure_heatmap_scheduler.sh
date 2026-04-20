@@ -19,6 +19,7 @@ Environment overrides:
   JOB_NAME            (default: heatmap-refresh-hk)
   SCHEDULE            (default: */10 8-16 * * 1-5)
   TIME_ZONE           (default: Asia/Hong_Kong)
+  ATTEMPT_DEADLINE    (default: 420s)
   MARKETS_CSV         (default: hk) e.g. hk,ks
   HEATMAP_CRON_TOKEN  (optional)
   ENABLE_APIS         (default: 1) enable cloudscheduler API automatically
@@ -38,6 +39,7 @@ JOB_NAME="${JOB_NAME:-heatmap-refresh-hk}"
 # so the shared job also covers the 09:00 open for JP/KR markets.
 SCHEDULE="${SCHEDULE:-*/10 8-16 * * 1-5}"
 TIME_ZONE="${TIME_ZONE:-Asia/Hong_Kong}"
+ATTEMPT_DEADLINE="${ATTEMPT_DEADLINE:-420s}"
 MARKETS_CSV="${MARKETS_CSV:-hk,tw,jp,ks}"
 HEATMAP_CRON_TOKEN="${HEATMAP_CRON_TOKEN:-13ca1a26a3b842c409820331638cc05ebc561c9ca2165c4e9ece09f0c7fd999f}"
 ENABLE_APIS="${ENABLE_APIS:-1}"
@@ -113,6 +115,7 @@ echo "Service URL      : ${SERVICE_URL}"
 echo "Job Name         : ${JOB_NAME}"
 echo "Schedule         : ${SCHEDULE}"
 echo "Time Zone        : ${TIME_ZONE}"
+echo "Attempt Deadline : ${ATTEMPT_DEADLINE}"
 echo "Markets          : ${MARKETS_CSV}"
 echo "Target URI       : ${TARGET_URI}"
 
@@ -121,6 +124,7 @@ COMMON_ARGS=(
   --location "${SCHEDULER_REGION}"
   --schedule "${SCHEDULE}"
   --time-zone "${TIME_ZONE}"
+  --attempt-deadline "${ATTEMPT_DEADLINE}"
   --uri "${TARGET_URI}"
   --http-method POST
   --message-body "${MESSAGE_BODY}"

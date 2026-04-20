@@ -46,7 +46,7 @@ uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 | `GCS_BUCKET_NAME` | 快照存储桶（为空则不写 GCS） | `""` |
 | `HEATMAP_GCS_PREFIX` | GCS 快照前缀 | `heatmap/snapshots` |
 | `HEATMAP_CACHE_TTL_SECONDS` | 内存缓存秒数 | `300` |
-| `HEATMAP_QUOTE_TIMEOUT_SECONDS` | 单市场抓价软超时秒数（`0`=关闭） | `90` |
+| `HEATMAP_QUOTE_TIMEOUT_SECONDS` | 单市场抓价软超时秒数（`0`=关闭） | `180` |
 | `HEATMAP_WRITE_HISTORY` | 是否写历史快照（写入前先归档上一版 latest） | `1` |
 | `HEATMAP_DEFAULT_MARKET` | 默认市场 | `hk` |
 | `HEATMAP_MARKETS_CONFIG_BLOB` | 可选：GCS 配置路径 | `""` |
@@ -87,6 +87,7 @@ cd GCP/heatmap_service
 
 - Method: `POST`
 - URL: `https://<heatmap-service-url>/v1/heatmap/refresh_all`
+- Attempt deadline: `420s`
 - Header: `x-heatmap-token: <same token>`（如果你配置了 `HEATMAP_CRON_TOKEN`）
 - Body: `{ "markets": ["hk", "tw", "jp", "ks"] }`
 
@@ -108,6 +109,7 @@ SCHEDULER_REGION="us-central1" \
 JOB_NAME="heatmap-refresh-hk" \
 SCHEDULE="*/10 8-16 * * 1-5" \
 TIME_ZONE="Asia/Hong_Kong" \
+ATTEMPT_DEADLINE="420s" \
 MARKETS_CSV="hk,tw,jp,ks" \
 HEATMAP_CRON_TOKEN="<same token>" \
 ./configure_heatmap_scheduler.sh
