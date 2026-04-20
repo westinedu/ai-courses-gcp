@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -466,6 +467,18 @@ def _pick_number(source: Dict[str, Any], keys: List[str]) -> Optional[float]:
     return None
 
 
+def _same_number(left: Optional[float], right: Optional[float], rel_tol: float = 1e-9, abs_tol: float = 1e-9) -> bool:
+    if left is None or right is None:
+        return False
+    return math.isclose(float(left), float(right), rel_tol=rel_tol, abs_tol=abs_tol)
+
+
+def _needs_prev_close_repair(price: Optional[float], prev_close: Optional[float]) -> bool:
+    # Some APAC tickers return fast_info.regularMarketPreviousClose == lastPrice
+    # after the session closes, which collapses heatmap colors to 0.00%.
+    return price is not None and prev_close is not None and _same_number(price, prev_close)
+
+
 def _fetch_one_quote(symbol: str, fallback_name: str, fallback_sector: str, fallback_currency: Optional[str]) -> Optional[Dict[str, Any]]:
     ticker_obj = yf.Ticker(symbol)
     fast = _extract_fast_info(ticker_obj)
@@ -491,7 +504,8 @@ def _fetch_one_quote(symbol: str, fallback_name: str, fallback_sector: str, fall
     market_cap = _pick_number(fast, ["marketCap", "market_cap"])
 
     info: Dict[str, Any] = {}
-    if price is None or prev_close is None or market_cap is None:
+    suspicious_prev_close = _needs_prev_close_repair(price, prev_close)
+    if price is None or prev_close is None or market_cap is None or suspicious_prev_close:
         try:
             info = ticker_obj.info or {}
         except Exception:
@@ -499,15 +513,20 @@ def _fetch_one_quote(symbol: str, fallback_name: str, fallback_sector: str, fall
 
     if price is None:
         price = _pick_number(info, ["regularMarketPrice", "currentPrice"])
+    info_prev_close = _pick_number(info, ["regularMarketPreviousClose", "previousClose"])
+    info_change_pct = _pick_number(info, ["regularMarketChangePercent"])
     if prev_close is None:
-        prev_close = _pick_number(info, ["regularMarketPreviousClose", "previousClose"])
+        prev_close = info_prev_close
+    elif suspicious_prev_close and info_prev_close is not None and not _same_number(info_prev_close, price):
+        prev_close = info_prev_close
     if market_cap is None:
         market_cap = _pick_number(info, ["marketCap"])
 
     history_price_used = False
-    if price is None or prev_close is None:
+    suspicious_prev_close = _needs_prev_close_repair(price, prev_close)
+    if price is None or prev_close is None or suspicious_prev_close:
         try:
-            hist = ticker_obj.history(period="2d", interval="1d", auto_adjust=False, actions=False)
+            hist = ticker_obj.history(period="5d", interval="1d", auto_adjust=False, actions=False)
             closes = []
             if hist is not None and not hist.empty and "Close" in hist.columns:
                 closes = [
@@ -516,11 +535,12 @@ def _fetch_one_quote(symbol: str, fallback_name: str, fallback_sector: str, fall
             if price is None and closes:
                 price = closes[-1]
                 history_price_used = True
-            if prev_close is None:
-                if len(closes) >= 2:
-                    prev_close = closes[-2]
-                elif len(closes) == 1:
-                    prev_close = closes[-1]
+            if len(closes) >= 2:
+                history_prev_close = closes[-2]
+                if prev_close is None or (_needs_prev_close_repair(price, prev_close) and not _same_number(history_prev_close, price)):
+                    prev_close = history_prev_close
+            elif prev_close is None and len(closes) == 1:
+                prev_close = closes[-1]
         except Exception:
             pass
 
@@ -531,7 +551,7 @@ def _fetch_one_quote(symbol: str, fallback_name: str, fallback_sector: str, fall
     if prev_close is not None and prev_close > 0:
         change_pct = ((price - prev_close) / prev_close) * 100.0
     if change_pct is None:
-        change_pct = _pick_number(info, ["regularMarketChangePercent"]) or 0.0
+        change_pct = info_change_pct or 0.0
 
     currency = (
         str(fast.get("currency") or "").strip().upper()
@@ -602,7 +622,8 @@ def _fetch_market_index(symbol: str, fallback_name: str, fallback_currency: Opti
     )
 
     info: Dict[str, Any] = {}
-    if price is None or prev_close is None:
+    suspicious_prev_close = _needs_prev_close_repair(price, prev_close)
+    if price is None or prev_close is None or suspicious_prev_close:
         try:
             info = ticker_obj.info or {}
         except Exception:
@@ -610,22 +631,27 @@ def _fetch_market_index(symbol: str, fallback_name: str, fallback_currency: Opti
 
     if price is None:
         price = _pick_number(info, ["regularMarketPrice", "currentPrice"])
+    info_prev_close = _pick_number(info, ["regularMarketPreviousClose", "previousClose"])
     if prev_close is None:
-        prev_close = _pick_number(info, ["regularMarketPreviousClose", "previousClose"])
+        prev_close = info_prev_close
+    elif suspicious_prev_close and info_prev_close is not None and not _same_number(info_prev_close, price):
+        prev_close = info_prev_close
 
     history_price_used = False
-    if price is None or prev_close is None:
+    suspicious_prev_close = _needs_prev_close_repair(price, prev_close)
+    if price is None or prev_close is None or suspicious_prev_close:
         try:
             hist = ticker_obj.history(period="5d", interval="1d", auto_adjust=False, actions=False)
             closes = _positive_history_closes(hist)
             if price is None and closes:
                 price = closes[-1]
                 history_price_used = True
-            if prev_close is None:
-                if len(closes) >= 2:
-                    prev_close = closes[-2]
-                elif len(closes) == 1:
-                    prev_close = closes[-1]
+            if len(closes) >= 2:
+                history_prev_close = closes[-2]
+                if prev_close is None or (_needs_prev_close_repair(price, prev_close) and not _same_number(history_prev_close, price)):
+                    prev_close = history_prev_close
+            elif prev_close is None and len(closes) == 1:
+                prev_close = closes[-1]
         except Exception:
             pass
 
