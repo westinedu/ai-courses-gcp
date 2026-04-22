@@ -38,6 +38,8 @@ CRON_TOKEN = (os.environ.get("HEATMAP_CRON_TOKEN") or "").strip()
 DEFAULT_MARKET = (os.environ.get("HEATMAP_DEFAULT_MARKET") or "hk").strip().lower() or "hk"
 # Soft timeout for one market refresh. 0 means no soft timeout.
 QUOTE_TIMEOUT_SECONDS = max(0, int(os.environ.get("HEATMAP_QUOTE_TIMEOUT_SECONDS", "180")))
+MAX_FAILED_COUNT = max(0, int(os.environ.get("HEATMAP_MAX_FAILED_COUNT", "3")))
+MAX_FAILED_RATIO = max(0.0, min(1.0, float(os.environ.get("HEATMAP_MAX_FAILED_RATIO", "0.03"))))
 
 LOCAL_CONFIG_PATH = Path(__file__).resolve().parent / "config" / "markets.json"
 
@@ -130,6 +132,65 @@ def _safe_float(value: Any) -> Optional[float]:
     if n != n:
         return None
     return n
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    n = _safe_float(value)
+    if n is None:
+        return None
+    if not float(n).is_integer():
+        return None
+    return int(n)
+
+
+def _allowed_failed_count(requested_count: int) -> int:
+    if requested_count <= 0:
+        return 0
+    return max(MAX_FAILED_COUNT, math.ceil(requested_count * MAX_FAILED_RATIO))
+
+
+def _snapshot_completeness_issue(snapshot: Any, market: Optional[str] = None) -> Optional[str]:
+    if not isinstance(snapshot, dict):
+        return "snapshot is not a JSON object"
+
+    expected_market = (market or "").strip().lower()
+    snapshot_market = str(snapshot.get("market") or "").strip().lower()
+    if expected_market and snapshot_market != expected_market:
+        return f"market mismatch ({snapshot_market or '<missing>'} != {expected_market})"
+
+    nodes = snapshot.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return "nodes missing"
+
+    count = _safe_int(snapshot.get("count"))
+    if count is None:
+        return "count missing"
+    if count != len(nodes):
+        return f"count mismatch ({count} != {len(nodes)})"
+
+    requested_count = _safe_int(snapshot.get("requestedCount"))
+    if requested_count is None or requested_count <= 0:
+        return "requestedCount missing"
+
+    failed_count = _safe_int(snapshot.get("failedCount"))
+    if failed_count is None or failed_count < 0:
+        return "failedCount missing"
+
+    failed_tickers = snapshot.get("failedTickers")
+    if _coerce_bool(snapshot.get("timedOut")):
+        return "timedOut=true"
+    if count + failed_count != requested_count:
+        return f"accounting mismatch ({count}+{failed_count}!={requested_count})"
+    if isinstance(failed_tickers, list) and len(failed_tickers) != failed_count:
+        return f"failedTickers mismatch ({len(failed_tickers)} != {failed_count})"
+    if failed_count > _allowed_failed_count(requested_count):
+        return f"failedCount={failed_count} exceeds allowance"
+
+    return None
+
+
+def _snapshot_is_complete(snapshot: Any, market: Optional[str] = None) -> bool:
+    return _snapshot_completeness_issue(snapshot, market) is None
 
 
 def _read_json_file(path: Path) -> Dict[str, Any]:
@@ -259,6 +320,39 @@ def _history_blob_path(market: str, generated_at: str) -> str:
     return f"{GCS_PREFIX}/{market}/history/{suffix}.json"
 
 
+def _load_latest_complete_history_snapshot_from_gcs(
+    market: str,
+    *,
+    bucket: Optional[storage.Bucket] = None,
+    client: Optional[storage.Client] = None,
+) -> Optional[Dict[str, Any]]:
+    resolved_client = client or _storage()
+    if resolved_client is None:
+        return None
+    resolved_bucket = bucket or resolved_client.bucket(GCS_BUCKET_NAME)
+    history_prefix = f"{GCS_PREFIX}/{market}/history/"
+    try:
+        blobs = list(resolved_client.list_blobs(resolved_bucket, prefix=history_prefix))
+    except Exception as exc:
+        logger.exception("Failed listing GCS history snapshots for market=%s: %s", market, exc)
+        return None
+
+    for blob in sorted(blobs, key=lambda item: item.name, reverse=True):
+        try:
+            data = json.loads(blob.download_as_text())
+        except Exception as exc:
+            logger.warning("Failed reading history snapshot blob=%s: %s", blob.name, exc)
+            continue
+        if not isinstance(data, dict):
+            continue
+        issue = _snapshot_completeness_issue(data, market)
+        if issue is None:
+            data["_from"] = "gcs-history"
+            return data
+        logger.warning("Ignoring incomplete history snapshot blob=%s market=%s: %s", blob.name, market, issue)
+    return None
+
+
 def _load_snapshot_from_gcs(market: str) -> Optional[Dict[str, Any]]:
     client = _storage()
     if client is None:
@@ -268,9 +362,18 @@ def _load_snapshot_from_gcs(market: str) -> Optional[Dict[str, Any]]:
         bucket = client.bucket(GCS_BUCKET_NAME)
         blob = bucket.blob(path)
         if not blob.exists(client=client):
-            return None
+            return _load_latest_complete_history_snapshot_from_gcs(market, bucket=bucket, client=client)
         data = json.loads(blob.download_as_text())
         if not isinstance(data, dict):
+            return _load_latest_complete_history_snapshot_from_gcs(market, bucket=bucket, client=client)
+        issue = _snapshot_completeness_issue(data, market)
+        if issue is not None:
+            logger.warning("Ignoring incomplete GCS latest snapshot for market=%s: %s", market, issue)
+            history_snapshot = _load_latest_complete_history_snapshot_from_gcs(market, bucket=bucket, client=client)
+            if history_snapshot is not None:
+                history_snapshot["stale"] = True
+                history_snapshot["error"] = f"Latest snapshot incomplete and was skipped: {issue}"
+                return history_snapshot
             return None
         data["_from"] = "gcs"
         return data
@@ -282,8 +385,11 @@ def _load_snapshot_from_gcs(market: str) -> Optional[Dict[str, Any]]:
 def _latest_snapshot(market: str) -> Optional[Dict[str, Any]]:
     entry = _snapshot_cache.get(market)
     snapshot = entry.get("snapshot") if isinstance(entry, dict) else None
-    if isinstance(snapshot, dict):
+    if isinstance(snapshot, dict) and _snapshot_is_complete(snapshot, market):
         return snapshot
+    if isinstance(snapshot, dict):
+        issue = _snapshot_completeness_issue(snapshot, market) or "unknown issue"
+        logger.warning("Ignoring incomplete memory snapshot for market=%s: %s", market, issue)
     return _load_snapshot_from_gcs(market)
 
 
@@ -797,6 +903,9 @@ def _build_market_snapshot(market: str) -> Dict[str, Any]:
     }
     if index_snapshot:
         snapshot["index"] = index_snapshot
+    issue = _snapshot_completeness_issue(snapshot, market)
+    if issue is not None:
+        raise RuntimeError(f"Incomplete snapshot for market={market}: {issue}")
     return snapshot
 
 
@@ -827,18 +936,73 @@ def _resolve_snapshot(market: str, force_refresh: bool = False) -> Dict[str, Any
         raise HTTPException(status_code=404, detail=f"Unsupported market '{market}'")
 
     lock = _get_market_lock(market)
-    with lock:
+    acquired_lock = False
+    if not force_refresh:
+        acquired_lock = lock.acquire(blocking=False)
+        if not acquired_lock:
+            logger.info("Refresh in progress for market=%s; serving latest committed snapshot.", market)
+            now_ts = time.time()
+            entry = _snapshot_cache.get(market)
+            cached_snapshot = entry.get("snapshot") if isinstance(entry, dict) else None
+            if _cached_entry_valid(entry, now_ts) and isinstance(cached_snapshot, dict) and _snapshot_is_complete(cached_snapshot, market):
+                expires_at = _safe_float(entry.get("expiresAt")) or now_ts
+                payload = dict(cached_snapshot)
+                payload["cache"] = {
+                    "hit": True,
+                    "layer": "memory",
+                    "ttlSeconds": int(max(0, expires_at - now_ts)),
+                }
+                return payload
+
+            gcs_snapshot = _load_snapshot_from_gcs(market)
+            if gcs_snapshot:
+                payload = dict(gcs_snapshot)
+                payload["cache"] = {
+                    "hit": True,
+                    "layer": "gcs",
+                    "ttlSeconds": CACHE_TTL_SECONDS,
+                }
+                return payload
+
+            if isinstance(cached_snapshot, dict) and _snapshot_is_complete(cached_snapshot, market):
+                payload = dict(cached_snapshot)
+                payload["cache"] = {
+                    "hit": True,
+                    "layer": "memory-stale",
+                    "ttlSeconds": 0,
+                }
+                payload["stale"] = True
+                payload["error"] = "Refresh in progress. Serving previous committed snapshot."
+                return payload
+
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "message": f"Snapshot not ready for market={market}.",
+                    "hint": "Refresh is in progress and no committed snapshot is available yet.",
+                },
+            )
+
+    if not acquired_lock:
+        lock.acquire()
+        acquired_lock = True
+    try:
         now_ts = time.time()
         entry = _snapshot_cache.get(market)
+        cached_snapshot = entry.get("snapshot") if isinstance(entry, dict) else None
         if not force_refresh and _cached_entry_valid(entry, now_ts):
-            expires_at = _safe_float(entry.get("expiresAt")) or now_ts
-            payload = dict(entry["snapshot"])
-            payload["cache"] = {
-                "hit": True,
-                "layer": "memory",
-                "ttlSeconds": int(max(0, expires_at - now_ts)),
-            }
-            return payload
+            if isinstance(cached_snapshot, dict) and _snapshot_is_complete(cached_snapshot, market):
+                expires_at = _safe_float(entry.get("expiresAt")) or now_ts
+                payload = dict(cached_snapshot)
+                payload["cache"] = {
+                    "hit": True,
+                    "layer": "memory",
+                    "ttlSeconds": int(max(0, expires_at - now_ts)),
+                }
+                return payload
+            if isinstance(cached_snapshot, dict):
+                issue = _snapshot_completeness_issue(cached_snapshot, market) or "unknown issue"
+                logger.warning("Bypassing incomplete memory cache for market=%s: %s", market, issue)
 
         if not force_refresh:
             # L2 strategy: normal read path should NOT trigger realtime recompute.
@@ -855,8 +1019,8 @@ def _resolve_snapshot(market: str, force_refresh: bool = False) -> Dict[str, Any
                 return payload
 
             # No L2 snapshot yet: return stale L1 if available, otherwise explicit 503.
-            if entry and isinstance(entry.get("snapshot"), dict):
-                payload = dict(entry["snapshot"])
+            if isinstance(cached_snapshot, dict) and _snapshot_is_complete(cached_snapshot, market):
+                payload = dict(cached_snapshot)
                 payload["cache"] = {
                     "hit": True,
                     "layer": "memory-stale",
@@ -894,8 +1058,8 @@ def _resolve_snapshot(market: str, force_refresh: bool = False) -> Dict[str, Any
             logger.exception("Failed building fresh snapshot for market=%s: %s", market, exc)
 
         # Refresh path fallback 1: stale memory cache.
-        if entry and isinstance(entry.get("snapshot"), dict):
-            payload = dict(entry["snapshot"])
+        if isinstance(cached_snapshot, dict) and _snapshot_is_complete(cached_snapshot, market):
+            payload = dict(cached_snapshot)
             payload["cache"] = {
                 "hit": True,
                 "layer": "memory-stale",
@@ -926,6 +1090,9 @@ def _resolve_snapshot(market: str, force_refresh: bool = False) -> Dict[str, Any
                 "error": build_error,
             },
         )
+    finally:
+        if acquired_lock:
+            lock.release()
 
 
 def _require_refresh_token(request: Request) -> None:
@@ -996,7 +1163,18 @@ def get_heatmap_snapshot(market: str) -> JSONResponse:
 @app.post("/v1/heatmap/{market}/refresh")
 def refresh_market_snapshot(request: Request, market: str) -> Dict[str, Any]:
     _require_refresh_token(request)
-    return _resolve_snapshot(market=market, force_refresh=True)
+    payload = _resolve_snapshot(market=market, force_refresh=True)
+    cache_info = payload.get("cache") if isinstance(payload, dict) else {}
+    cache_layer = str(cache_info.get("layer") or "").strip().lower() if isinstance(cache_info, dict) else ""
+    if cache_layer != "fresh" or _coerce_bool(payload.get("stale")):
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": f"Failed refreshing heatmap snapshot for market={market}",
+                "error": payload.get("error") or "Refresh fell back to stale snapshot",
+            },
+        )
+    return payload
 
 
 @app.post("/v1/heatmap/refresh_all")
@@ -1039,6 +1217,22 @@ async def refresh_all_snapshots(request: Request) -> Dict[str, Any]:
 
         try:
             snap = _resolve_snapshot(market=market, force_refresh=True)
+            cache_info = snap.get("cache") if isinstance(snap, dict) else {}
+            cache_layer = str(cache_info.get("layer") or "").strip().lower() if isinstance(cache_info, dict) else ""
+            if cache_layer != "fresh" or _coerce_bool(snap.get("stale")):
+                results.append(
+                    {
+                        "market": market,
+                        "ok": False,
+                        "refreshed": False,
+                        "status": 502,
+                        "detail": {
+                            "message": f"Refresh did not produce a complete snapshot for market={market}",
+                            "error": snap.get("error") or "Refresh fell back to stale snapshot",
+                        },
+                    }
+                )
+                continue
             results.append(
                 {
                     "market": market,
