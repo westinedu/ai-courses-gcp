@@ -63,8 +63,11 @@ MARKET_REFRESH_POLICIES: Dict[str, Dict[str, Any]] = {
         "cadence_seconds": 10 * 60,
         "phase_minute": 0,
         "window_start_minute": 9 * 60,
-        "window_end_minute": 13 * 60 + 30,
+        # TWSE closes at 13:30. Keep one post-close forced slot so delayed
+        # quote vendors can publish the official close before the last snapshot.
+        "window_end_minute": 13 * 60 + 40,
         "weekdays": {0, 1, 2, 3, 4},
+        "forced_slot_minutes": {13 * 60 + 40},
     },
     "jp": {
         "cadence_seconds": 30 * 60,
@@ -457,6 +460,26 @@ def _refresh_decision(market: str, *, force: bool = False, now: Optional[datetim
     age_seconds = None
     if latest_generated_at is not None:
         age_seconds = max(0, int(((now or datetime.now(timezone.utc)) - latest_generated_at).total_seconds()))
+
+    forced_slot_minutes = policy.get("forced_slot_minutes") or set()
+    if minute_of_day in forced_slot_minutes:
+        forced_slot_start_local = local_now.replace(second=0, microsecond=0)
+        forced_slot_start_utc = forced_slot_start_local.astimezone(timezone.utc)
+        if latest_generated_at is not None and latest_generated_at >= forced_slot_start_utc:
+            return {
+                "refresh": False,
+                "reason": "forced_slot_already_refreshed",
+                "cadenceSeconds": cadence_seconds,
+                "phaseMinute": phase_minute,
+                "ageSeconds": age_seconds,
+            }
+        return {
+            "refresh": True,
+            "reason": "forced_slot_due",
+            "cadenceSeconds": cadence_seconds,
+            "phaseMinute": phase_minute,
+            "ageSeconds": age_seconds,
+        }
 
     if slot_refresh and cadence_seconds >= 60:
         cadence_minutes = max(1, cadence_seconds // 60)
