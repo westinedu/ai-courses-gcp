@@ -461,7 +461,7 @@ def _normalize_symbol_strict(raw: Any) -> Optional[str]:
         return None
     if len(v) > 24:
         return None
-    if not all(ch.isalnum() or ch in ".^-" for ch in v):
+    if not all(ch.isalnum() or ch in ".^=-" for ch in v):
         return None
     return v
 
@@ -559,8 +559,8 @@ def _fetch_historical_df(
 
 def _normalize_symbol(raw: Any) -> str:
     v = str(raw or "AAPL").strip().upper()
-    # Yahoo symbol format is allowed: letters, numbers, dash, dot, caret.
-    if 1 <= len(v) <= 12 and all(ch.isalnum() or ch in ".^-" for ch in v):
+    # Yahoo symbol format is allowed: AAPL, BRK-B, 3690.HK, ^GSPC, BTC-USD, EURUSD=X, GC=F.
+    if 1 <= len(v) <= 24 and all(ch.isalnum() or ch in ".^=-" for ch in v):
         return v
     return "AAPL"
 
